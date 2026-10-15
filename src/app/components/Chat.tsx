@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import ProposalCard from './ProposalCard'
+import { readEventStream } from './stream'
 import type { AgentEvent, ProposalView } from './types'
 
 type Step =
@@ -93,28 +94,7 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
         const body = (await res.json().catch(() => null)) as { message?: string } | null
         throw new Error(body?.message ?? `HTTP ${res.status}`)
       }
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-      let finished = false
-      const handle = (line: string) => {
-        const e = JSON.parse(line) as AgentEvent
-        if (e.type === 'done') finished = true
-        apply(e)
-      }
-      for (;;) {
-        const { value, done } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        let nl
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl).trim()
-          buf = buf.slice(nl + 1)
-          if (line) handle(line)
-        }
-      }
-      buf += decoder.decode()
-      if (buf.trim()) handle(buf.trim())
+      const finished = await readEventStream(res.body, (e) => apply(e as AgentEvent))
       // The server always ends a turn with a "done" event. Without it the answer was cut off in transit.
       if (!finished && !ctrl.signal.aborted) {
         apply({ type: 'error', message: 'The answer was cut off. Pending proposals and the board below show the real state.' })

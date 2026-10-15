@@ -1,6 +1,7 @@
 import { appendFileSync, writeFileSync } from 'node:fs'
 import { AnthropicModel } from '../src/core/models/anthropic'
 import { defaultModelFactory, SCENARIOS } from './scenarios'
+import { verdict } from './verdict'
 
 const live = process.argv.includes('--live')
 if (live && !process.env.ANTHROPIC_API_KEY) {
@@ -9,9 +10,6 @@ if (live && !process.env.ANTHROPIC_API_KEY) {
 }
 const model = live ? () => new AnthropicModel() : defaultModelFactory
 const selected = live ? SCENARIOS.filter((s) => s.live) : SCENARIOS
-
-/** A scenario with fewer checks proves too little to count as a pass (an empty list is not a PASS). */
-const MIN_CHECKS = 2
 
 const rows: string[] = []
 let failed = 0
@@ -23,18 +21,10 @@ for (const s of selected) {
   try {
     const res = await s.run({ model, live })
     checks += res.length
-    const bad = res.filter((c) => !c.ok)
-    if (res.length < MIN_CHECKS) {
-      failed++
-      result = `FAIL (${res.length} checks, minimum ${MIN_CHECKS})`
-      detail = 'too few checks to prove anything'
-    } else {
-      result = bad.length ? `FAIL (${res.length - bad.length}/${res.length})` : `PASS (${res.length}/${res.length})`
-      if (bad.length) {
-        failed++
-        detail = bad.map((c) => `${c.name}${c.detail ? `: ${c.detail}` : ''}`).join(' | ')
-      }
-    }
+    const v = verdict(res)
+    result = v.result
+    detail = v.detail
+    if (!v.pass) failed++
   } catch (e) {
     failed++
     result = 'ERROR'
