@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { runTurn } from '@/core/agent'
 import { FixedClock } from '@/core/clock'
-import { all, get, openDb, run } from '@/core/db'
+import { all, enableWal, get, openDb, run, type Db } from '@/core/db'
 import type { AgentEvent, Block, ModelClient, Msg } from '@/core/models/types'
 import { FIELD_NAMES, TOOL_NAMES } from '@/core/names'
 import { countOpen, listPending } from '@/core/proposals'
@@ -67,31 +67,52 @@ describe('first start, two processes', () => {
 })
 
 describe('first start, schema', () => {
-  it('six processes opening one fresh database at once all start (5 rounds)', async () => {
+  it('six processes opening one fresh database at the same moment all start (8 rounds)', async () => {
     const child = resolve('test/fixtures/open-child.ts')
     const failures: string[] = []
-    for (let round = 0; round < 5; round++) {
+    for (let round = 0; round < 8; round++) {
       const dir = mkdtempSync(join(tmpdir(), 'cfa-'))
       try {
         const path = join(dir, 'demo.db')
-        const outs = await Promise.all(
-          Array.from({ length: 6 }, () =>
-            new Promise<string>((ok) => {
-              const p = spawn(process.execPath, ['--import', 'tsx', child, path], { stdio: ['ignore', 'pipe', 'pipe'] })
-              let out = ''
-              p.stdout.on('data', (d: Buffer) => (out += d.toString()))
-              p.stderr.on('data', (d: Buffer) => (out += d.toString()))
-              p.on('close', () => ok(out))
-            }),
-          ),
+        const kids = Array.from({ length: 6 }, () => {
+          const p = spawn(process.execPath, ['--import', 'tsx', child, path], { stdio: ['pipe', 'pipe', 'pipe'] })
+          const k = { p, out: '' }
+          p.stdout.on('data', (d: Buffer) => (k.out += d.toString()))
+          p.stderr.on('data', (d: Buffer) => (k.out += d.toString()))
+          return k
+        })
+        await Promise.all(
+          kids.map((k) => new Promise<void>((ok) => { const t = setInterval(() => { if (k.out.includes('ready') || k.p.exitCode !== null) { clearInterval(t); ok() } }, 5) })),
         )
-        failures.push(...outs.filter((o) => !o.startsWith('ok')))
+        for (const k of kids) k.p.stdin.write('go\n')
+        await Promise.all(kids.map((k) => new Promise((ok) => (k.p.exitCode !== null ? ok(null) : k.p.on('close', ok)))))
+        failures.push(...kids.filter((k) => !k.out.includes('\nok')).map((k) => k.out.trim()))
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
     }
     expect(failures).toEqual([])
-  }, 60_000)
+  }, 90_000)
+})
+
+describe('WAL switch on a busy file', () => {
+  it('retries "database is locked" instead of failing the start', () => {
+    let calls = 0
+    const fake = {
+      exec: () => {
+        calls++
+        if (calls <= 2) throw new Error('database is locked')
+      },
+      close: () => {},
+    } as unknown as Db
+    expect(() => enableWal(fake)).not.toThrow()
+    expect(calls).toBe(3)
+  })
+
+  it('does not hide other errors', () => {
+    const fake = { exec: () => { throw new Error('disk I/O error') }, close: () => {} } as unknown as Db
+    expect(() => enableWal(fake)).toThrow('disk I/O error')
+  })
 })
 
 describe('audit rows without a project carry no model-chosen text', () => {

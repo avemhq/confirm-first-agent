@@ -8,10 +8,32 @@ export type Row = Record<string, unknown>
 /** Bump when the schema or the audit hash format changes. */
 export const SCHEMA_VERSION = 2
 
+/**
+ * Switching to WAL needs a short exclusive lock and SQLite may report "database is locked" for it
+ * without waiting on busy_timeout, e.g. when several processes start on a fresh file at once.
+ * Retry briefly instead of failing the start.
+ */
+export function enableWal(db: Db): void {
+  const pause = new Int32Array(new SharedArrayBuffer(4))
+  for (let attempt = 0; ; attempt++) {
+    try {
+      db.exec('PRAGMA journal_mode = WAL;')
+      return
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (attempt >= 100 || !/locked|busy/i.test(msg)) {
+        db.close()
+        throw err
+      }
+      Atomics.wait(pause, 0, 0, 20 + Math.floor(Math.random() * 20))
+    }
+  }
+}
+
 export function openDb(path: string): Db {
   const db = new DatabaseSync(path)
   db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
-  if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL;')
+  if (path !== ':memory:') enableWal(db)
   // Check, create and stamp the schema in one write transaction: a second process starting at the
   // same moment waits here instead of seeing tables without a version stamp.
   db.exec('BEGIN IMMEDIATE')
