@@ -24,6 +24,7 @@ describe('agent loop limits', () => {
       emit: (e) => events.push(e),
     })
     expect(n).toBe(MAX_STEPS)
+    expect(MAX_STEPS).toBe(6) // the documented contract (README), not just whatever the constant says
     expect(events.some((e) => e.type === 'error')).toBe(true)
     expect(all(core.db, "SELECT 1 FROM audit_log WHERE event = 'turn_limit'")).toHaveLength(1)
   })
@@ -45,5 +46,6 @@ describe('agent loop limits', () => {
       emit: () => {},
     })
     expect(all(core.db, 'SELECT id FROM proposals')).toHaveLength(MAX_PROPOSALS_PER_TURN)
+    expect(MAX_PROPOSALS_PER_TURN).toBe(3) // the documented contract (README)
   })
 })

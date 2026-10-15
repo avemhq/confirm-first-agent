@@ -6,7 +6,7 @@
  * (see mcp/confirm-cli.ts for why it is not a security boundary).
  * stdout belongs to the protocol; all logging goes to stderr.
  */
-import '../scripts/load-env'
+import { fromInvocation } from '../scripts/load-env'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { get } from '../src/core/db'
@@ -16,7 +16,7 @@ import { executeTool, PROPOSAL_TOOLS, TOOLS } from '../src/core/tools'
 import { parseArgsOrExit } from './args'
 
 const { flags, positional } = parseArgsOrExit(process.argv.slice(2), ['user', 'db'], 'mcp/server.ts --user <id> [--db path]')
-if (flags.db) process.env.DB_PATH = flags.db
+if (flags.db !== undefined) process.env.DB_PATH = fromInvocation(flags.db)
 const user = flags.user
 if (!user || !/^[a-z]{1,20}$/.test(user) || positional.length) {
   console.error('usage: mcp/server.ts --user <id> [--db path]')

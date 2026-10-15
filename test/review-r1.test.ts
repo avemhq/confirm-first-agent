@@ -1,6 +1,6 @@
 /** Regression tests for the findings of external review round 1. Each test fails on the old code. */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -9,7 +9,7 @@ import { runTurn } from '@/core/agent'
 import { get, run } from '@/core/db'
 import { MockModel } from '@/core/models/mock'
 import { confirm, countOpen, listPending, verifyToken } from '@/core/proposals'
-import { as, createTestCore } from '@/core/testing'
+import { as, createTestCore, spareBitVariants } from '@/core/testing'
 import { executeTool } from '@/core/tools'
 import { isSafeLine, isSafeText, visible } from '@/core/untrusted'
 import { RateLimiter } from '@/server/rate-limit'
@@ -53,6 +53,11 @@ describe('token is bound to the whole operation (finding 3)', () => {
     expect(verifyToken(core.secret, p.token).ok).toBe(true)
     expect(verifyToken(core.secret, `${p.token}=`).ok).toBe(false)
     expect(verifyToken(core.secret, `${p.token}A`).ok).toBe(false)
+    // Same 256 bits, different spare bits in the last character (RFC 4648 3.5): all refused.
+    const others = spareBitVariants(p.token!)
+    expect(others).toHaveLength(3)
+    expect(others.map((t) => Buffer.from(t.split('.')[2]!, 'base64url').equals(Buffer.from(p.token!.split('.')[2]!, 'base64url')))).toEqual([true, true, true])
+    expect(others.map((t) => verifyToken(core.secret, t).ok)).toEqual([false, false, false])
   })
 })
 
@@ -158,9 +163,12 @@ describe('scripts (findings 1 and 5)', () => {
     try {
       const db = join(dir, 'keep.db')
       writeFileSync(db, 'existing')
+      writeFileSync(`${db}-wal`, 'wal')
       const r = runScript('scripts/reset-db.ts', { DB_PATH: db, CONFIRM_SECRET: 'short' })
       expect(r.status).not.toBe(0)
-      expect(existsSync(db)).toBe(true)
+      // Untouched, not merely present: same content, and the journal next to it is still there.
+      expect(readFileSync(db, 'utf8')).toBe('existing')
+      expect(readFileSync(`${db}-wal`, 'utf8')).toBe('wal')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

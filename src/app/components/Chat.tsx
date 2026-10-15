@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import ProposalCard from './ProposalCard'
-import { readEventStream } from './stream'
+import { chatHistory, readEventStream } from './stream'
 import type { AgentEvent, ProposalView } from './types'
 
 type Step =
@@ -10,6 +10,7 @@ type Step =
   | { kind: 'proposal'; proposal: ProposalView }
   | { kind: 'denied'; tool: string; detail: string }
   | { kind: 'flag'; source: string }
+  | { kind: 'notice'; message: string }
   | { kind: 'error'; message: string }
 
 interface Turn {
@@ -64,6 +65,8 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
         return patchLast((t) => ({ ...t, steps: [...t.steps, { kind: 'denied', tool: e.tool, detail: e.detail }] }))
       case 'flag':
         return patchLast((t) => ({ ...t, steps: [...t.steps, { kind: 'flag', source: e.source }] }))
+      case 'notice':
+        return patchLast((t) => ({ ...t, steps: [...t.steps, { kind: 'notice', message: e.message }] }))
       case 'error':
         return patchLast((t) => ({ ...t, steps: [...t.steps, { kind: 'error', message: e.message }] }))
       default:
@@ -76,11 +79,9 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
     if (!msg || busy) return
     setInput('')
     setBusy(true)
-    const history = [...turns, { role: 'user' as const, text: msg, steps: [] }]
-      .filter((t) => t.text.trim())
-      .slice(-20)
-      .map((t) => ({ role: t.role, text: t.text.slice(0, 4000) }))
-    setTurns((ts) => [...ts, { role: 'user', text: msg, steps: [] }, { role: 'assistant', text: '', steps: [] }])
+    const { history, cut } = chatHistory([...turns, { role: 'user' as const, text: msg }])
+    const notice: Step[] = cut ? [{ kind: 'notice', message: cut }] : []
+    setTurns((ts) => [...ts, { role: 'user', text: msg, steps: [] }, { role: 'assistant', text: '', steps: notice }])
     const ctrl = new AbortController()
     abortRef.current = ctrl
     try {
@@ -141,6 +142,12 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
                         <span>
                           Server refused <span className="mono">{s.tool}</span>: {s.detail}
                         </span>
+                      </div>
+                    )
+                  if (s.kind === 'notice')
+                    return (
+                      <div key={j} className="step warn">
+                        <span>{s.message}</span>
                       </div>
                     )
                   if (s.kind === 'flag')

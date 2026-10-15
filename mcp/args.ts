@@ -18,6 +18,8 @@ export function parseArgs(
       if (!allowed.includes(name)) throw new ArgsError(`unknown flag --${name} (allowed: ${allowed.map((f) => `--${f}`).join(', ')})`)
       const value = argv[i + 1]
       if (value === undefined || value.startsWith('--')) throw new ArgsError(`flag --${name} needs a value`)
+      if (value.trim() === '') throw new ArgsError(`flag --${name} must not be empty`)
+      if (name in flags) throw new ArgsError(`flag --${name} given twice`)
       flags[name] = value
       i++
     } else positional.push(a)
@@ -32,6 +34,14 @@ export function parseArgsOrExit(argv: string[], allowed: readonly string[], usag
   } catch (e) {
     if (!(e instanceof ArgsError)) throw e
     console.error(`${e.message}\nusage: ${usage}`)
+    process.exit(2)
+  }
+}
+
+/** For entry points that take no arguments: anything on the command line is an error, exit 2. */
+export function noArgsOrExit(argv: string[], usage: string): void {
+  if (argv.length) {
+    console.error(`unexpected argument ${argv[0]}\nusage: ${usage}`)
     process.exit(2)
   }
 }

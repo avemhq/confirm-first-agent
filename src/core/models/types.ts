@@ -37,5 +37,6 @@ export type AgentEvent =
   | { type: 'proposal'; proposal: ProposalView }
   | { type: 'denied'; tool: string; detail: string }
   | { type: 'flag'; kind: 'injection'; source: string }
+  | { type: 'notice'; message: string }
   | { type: 'error'; message: string }
   | { type: 'done' }

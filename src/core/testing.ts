@@ -15,3 +15,10 @@ export function createTestCore(): Core & { clock: FixedClock } {
 }
 
 export const as = (core: Core, actorId: string, channel: Channel = 'web'): Ctx => ({ ...core, actorId, channel })
+
+/** The three other spellings of the MAC's last base64url character (same 6 bits minus the 2 spare ones). */
+export function spareBitVariants(token: string): string[] {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+  const i = A.indexOf(token.slice(-1))
+  return [0, 1, 2, 3].filter((k) => k !== (i & 3)).map((k) => token.slice(0, -1) + A[(i & ~3) | k])
+}

@@ -19,7 +19,7 @@ import { systemClock } from '../src/core/clock'
 import { get, openDb, run } from '../src/core/db'
 import { confirm, countOpen, getProposal, listPending, reject, signToken, verifyToken, type DecisionResult } from '../src/core/proposals'
 import { seed } from '../src/core/seed'
-import { as, createTestCore } from '../src/core/testing'
+import { as, createTestCore, spareBitVariants } from '../src/core/testing'
 import { executeTool, type ToolOutcome } from '../src/core/tools'
 import { sameOriginHeaders, signSession, SESSION_SECONDS, verifySession } from '../src/server/session-core'
 
@@ -181,8 +181,8 @@ for (const [what, sql] of [
   const bad: unknown[] = ['', 'v1..', `v1.${'A'.repeat(5000)}.x`, 'v2.a.b', ['v1', 'a'], { toString: () => f.token }, `v1.e30.${Buffer.alloc(32).toString('base64url')}`]
   const codes = bad.map((t) => confirm(f.core, f.input(t)).status)
   record('core', '7 malformed token shapes (array, object, oversize, wrong version)', codes.every((c) => c === 401) && f.untouched(), codes.join(','))
-  const variants = [`${f.token}=`, `${f.token}A`].map((t) => verifyToken(f.core.secret, t).ok)
-  record('core', 'Re-encode the MAC (padding, trailing character)', variants.every((ok) => !ok), 'malformed')
+  const variants = [`${f.token}=`, `${f.token}A`, ...spareBitVariants(f.token)].map((t) => verifyToken(f.core.secret, t).ok)
+  record('core', 'Re-encode the MAC (padding, trailing character, 3 spare-bit spellings)', variants.every((ok) => !ok), 'malformed')
 }
 {
   const core = createTestCore()

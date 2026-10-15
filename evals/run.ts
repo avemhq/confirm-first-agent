@@ -3,6 +3,11 @@ import { AnthropicModel } from '../src/core/models/anthropic'
 import { defaultModelFactory, SCENARIOS } from './scenarios'
 import { verdict } from './verdict'
 
+const extra = process.argv.slice(2).filter((a) => a !== '--live')
+if (extra.length) {
+  console.error(`unknown argument ${extra[0]} (usage: tsx evals/run.ts [--live])`)
+  process.exit(2)
+}
 const live = process.argv.includes('--live')
 if (live && !process.env.ANTHROPIC_API_KEY) {
   console.error('eval:live needs ANTHROPIC_API_KEY in the environment.')

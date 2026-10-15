@@ -9,7 +9,7 @@
  * checkout. The MCP server therefore never tells the model about this command; it points the human
  * to the web UI. See README, "Threat model and limitations".
  */
-import '../scripts/load-env'
+import { fromInvocation } from '../scripts/load-env'
 import { createInterface } from 'node:readline/promises'
 import { confirm, getProposal, reject, toView, tokenFor } from '../src/core/proposals'
 import { getCore } from '../src/core/runtime'
@@ -18,7 +18,7 @@ import { parseArgsOrExit } from './args'
 
 const USAGE = 'npm run confirm -- <proposal-id> --user <id> [--db path]'
 const { flags, positional } = parseArgsOrExit(process.argv.slice(2), ['user', 'db'], USAGE)
-if (flags.db) process.env.DB_PATH = flags.db
+if (flags.db !== undefined) process.env.DB_PATH = fromInvocation(flags.db)
 const id = positional[0]
 const user = flags.user
 if (!id || !user || positional.length !== 1) {

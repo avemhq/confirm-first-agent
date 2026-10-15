@@ -6,7 +6,7 @@ import type { Ctx } from './context'
 import { all, get, type Row } from './db'
 import { isKnownField } from './names'
 import { createProposal, MAX_OPEN_PROPOSALS, toView, type ProposalTool, type ProposalView } from './proposals'
-import { detectInjection, escapeTags as esc, isSafeLine, isSafeText, wrapUntrusted } from './untrusted'
+import { detectInjection, escapeTags as esc, isSafeLine, isSafeText, visible, wrapUntrusted } from './untrusted'
 
 // ---------------------------------------------------------------------------
 // Shared field schemas. The actor is NEVER a field: it comes from the session.
@@ -27,6 +27,8 @@ export type UiEvent =
   | { type: 'proposal'; proposal: ProposalView }
   | { type: 'denied'; tool: string; detail: string }
   | { type: 'flag'; kind: 'injection'; source: string }
+  /** Shown to the human by the server, whatever the model says: e.g. a result list was cut. */
+  | { type: 'notice'; message: string }
 
 export interface ToolOutcome {
   /** Goes back to the model. Never contains a confirmation token. */
@@ -98,6 +100,9 @@ function flagIfInjected(ctx: Ctx, source: string, text: string, ui: UiEvent[], p
 
 const today = (ctx: Ctx) => isoDate(ctx.clock.now())
 
+/** How many confirmed changes the project report lists (the total is always reported next to them). */
+export const RECENT_CHANGES = 5
+
 /** A window of the body around the first match, so the hit is visible in the snippet. */
 function snippet(body: string, query: string, width = 160): string {
   // Search the original string (not a lower-cased copy, whose indices can shift for some Unicode letters).
@@ -148,7 +153,7 @@ export const TOOLS = [
         `SELECT p.id, p.name, p.description, m.role FROM projects p JOIN memberships m ON m.project_id = p.id
          WHERE m.user_id = ? ORDER BY p.id`,
         ctx.actorId,
-      ).map((p) => ({ ...p, name: esc(p.name), description: esc(p.description) })),
+      ).map((p) => ({ ...p, name: esc(p.name), description: wrapUntrusted(`project:${p.id}`, p.description) })),
   }),
 
   tool({
@@ -168,7 +173,7 @@ export const TOOLS = [
       })
       .strict(),
     readOnly: true,
-    handler: (ctx, input) => {
+    handler: (ctx, input, ui) => {
       if (input.projectId) visibleProject(ctx, input.projectId)
       const scope = input.projectId ? [input.projectId] : scopedProjectIds(ctx.db, ctx.actorId)
       if (!scope.length) return { tasks: [] }
@@ -186,6 +191,7 @@ export const TOOLS = [
       const limit = input.limit ?? 20
       const total = get<{ n: number }>(ctx.db, `SELECT COUNT(*) AS n FROM tasks WHERE ${where.join(' AND ')}`, ...params)?.n ?? 0
       const rows = all<TaskRow>(ctx.db, `SELECT * FROM tasks WHERE ${where.join(' AND ')} ORDER BY CAST(substr(id, 3) AS INTEGER) LIMIT ?`, ...params, limit)
+      if (total > rows.length) ui.push({ type: 'notice', message: `Task search returned ${rows.length} of ${total} matching tasks; the answer covers only those.` })
       return {
         total,
         returned: rows.length,
@@ -241,6 +247,7 @@ export const TOOLS = [
       const rows = all<Row & { id: string; project_id: string; title: string; body: string; kind: string }>(
         ctx.db, `SELECT * FROM documents WHERE ${where} ORDER BY id LIMIT 20`, ...scope, like, like,
       )
+      if (total > rows.length) ui.push({ type: 'notice', message: `Document search returned ${rows.length} of ${total} matching documents; the answer covers only those.` })
       return {
         total,
         returned: rows.length,
@@ -278,7 +285,7 @@ export const TOOLS = [
     description: 'Numbers for a status report: tasks per status, overdue tasks, open tasks per assignee, last applied changes.',
     schema: z.object({ projectId: ProjectId }).strict(),
     readOnly: true,
-    handler: (ctx, input) => {
+    handler: (ctx, input, ui) => {
       assertCan(ctx.db, ctx.actorId, input.projectId, 'read')
       const byStatus = all<{ status: string; n: number }>(
         ctx.db, 'SELECT status, COUNT(*) AS n FROM tasks WHERE project_id = ? GROUP BY status ORDER BY status', input.projectId,
@@ -295,9 +302,11 @@ export const TOOLS = [
       )
       const recent = all<{ title: string; decided_by: string; decided_at: string }>(
         ctx.db,
-        "SELECT title, decided_by, decided_at FROM proposals WHERE project_id = ? AND status = 'applied' ORDER BY decided_at DESC LIMIT 5",
+        `SELECT title, decided_by, decided_at FROM proposals WHERE project_id = ? AND status = 'applied' ORDER BY decided_at DESC LIMIT ${RECENT_CHANGES}`,
         input.projectId,
       )
+      const changes = get<{ n: number }>(ctx.db, "SELECT COUNT(*) AS n FROM proposals WHERE project_id = ? AND status = 'applied'", input.projectId)?.n ?? 0
+      if (changes > recent.length) ui.push({ type: 'notice', message: `The report lists the latest ${recent.length} of ${changes} confirmed changes.` })
       return {
         projectId: input.projectId,
         asOf: today(ctx),
@@ -305,6 +314,7 @@ export const TOOLS = [
         overdue: overdue.map((t) => ({ id: t.id, title: esc(t.title), dueDate: t.due_date, assigneeId: t.assignee_id })),
         openByAssignee: load,
         recentChanges: recent.map((r) => ({ ...r, title: esc(r.title) })),
+        recentChangesNote: `latest ${recent.length} of ${changes} confirmed changes`,
       }
     },
   }),
@@ -355,7 +365,7 @@ export const TOOLS = [
       assertCan(ctx.db, ctx.actorId, t.project_id, 'propose_update_task_status')
       if (t.status === input.status) throw new ToolError('no_change', `${t.id} is already ${t.status}`)
       return propose(ctx, ui, {
-        tool: 'propose_update_task_status', projectId: t.project_id, title: `${t.id} "${t.title}": ${t.status} → ${input.status}`,
+        tool: 'propose_update_task_status', projectId: t.project_id, title: `${t.id} "${visible(t.title)}": ${t.status} → ${input.status}`,
         args: { taskId: t.id, status: input.status }, targetId: t.id, baseVersion: t.version,
         before: { status: t.status }, after: { status: input.status }, reason: input.reason,
       })
@@ -376,7 +386,7 @@ export const TOOLS = [
       assertCan(ctx.db, ctx.actorId, t.project_id, 'propose_assign_task', { assigneeId: input.assigneeId })
       if (t.assignee_id === input.assigneeId) throw new ToolError('no_change', `${t.id} is already assigned to ${input.assigneeId}`)
       return propose(ctx, ui, {
-        tool: 'propose_assign_task', projectId: t.project_id, title: `${t.id} "${t.title}": assign to ${input.assigneeId}`,
+        tool: 'propose_assign_task', projectId: t.project_id, title: `${t.id} "${visible(t.title)}": assign to ${input.assigneeId}`,
         args: { taskId: t.id, assigneeId: input.assigneeId }, targetId: t.id, baseVersion: t.version,
         before: { assigneeId: t.assignee_id }, after: { assigneeId: input.assigneeId }, reason: input.reason,
       })

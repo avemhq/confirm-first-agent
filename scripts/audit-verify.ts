@@ -1,10 +1,12 @@
 import './load-env'
+import { noArgsOrExit } from '../mcp/args'
 import { existsSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { verifyChain } from '../src/core/audit'
 import { dbPath } from '../src/core/runtime'
 
 // Verify, never create: a missing or mistyped DB_PATH is an error, not an empty "OK" chain.
+noArgsOrExit(process.argv.slice(2), 'DB_PATH=<path> npm run audit:verify')
 const path = dbPath()
 if (!existsSync(path)) {
   console.error(`no database at ${path} (set DB_PATH or run "npm run db:reset")`)

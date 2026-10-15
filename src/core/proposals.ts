@@ -4,6 +4,7 @@ import { assertCan, AuthzError, isMember, type Action } from './authz'
 import { canonicalJson, sha256 } from './canonical'
 import type { Core, Ctx } from './context'
 import { all, get, run, tx, type Db } from './db'
+import { visible } from './untrusted'
 
 export const PROPOSAL_TTL_SECONDS = 300
 /** Open (pending, unexpired) proposals per user, across all channels. Caps queue flooding by a compromised model. */
@@ -105,6 +106,9 @@ export function verifyToken(secret: Buffer, token: unknown): VerifyResult {
   if (!/^[A-Za-z0-9_-]{43}$/.test(macB64)) return { ok: false, reason: 'malformed' }
   const expected = createHmac('sha256', secret).update(`v1.${payloadB64}`).digest()
   const given = Buffer.from(macB64, 'base64url')
+  // 43 characters carry 258 bits for 256: the 2 spare bits of the last character must be zero, or
+  // four spellings would decode to the same MAC (RFC 4648, section 3.5, canonical encoding).
+  if (given.toString('base64url') !== macB64) return { ok: false, reason: 'malformed' }
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return { ok: false, reason: 'bad_signature' }
   try {
     const p = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as TokenPayload
@@ -133,17 +137,30 @@ export interface NewProposal {
   reason: string
 }
 
+/** Every string a human reads before confirming, with control and bidi characters made visible. */
+function visibleDeep<T>(v: T): T {
+  if (typeof v === 'string') return visible(v) as T
+  if (Array.isArray(v)) return v.map(visibleDeep) as T
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [visible(k), visibleDeep(x)])) as T
+  return v
+}
+
+/**
+ * The view for the confirmation screens (web card, terminal). Stored text is escaped on the way out,
+ * not only checked on the way in: rows written before the input check, or task titles copied into a
+ * proposal from the database, cannot reach a human with hidden or reordered characters.
+ */
 export function toView(p: ProposalRow, token?: string): ProposalView {
   return {
     id: p.id,
     tool: p.tool,
-    title: p.title,
+    title: visible(p.title),
     projectId: p.project_id,
     actorId: p.actor_id,
     channel: p.channel,
-    before: p.before_json ? (JSON.parse(p.before_json) as Record<string, unknown>) : null,
-    after: JSON.parse(p.after_json) as Record<string, unknown>,
-    reason: p.reason,
+    before: p.before_json ? visibleDeep(JSON.parse(p.before_json) as Record<string, unknown>) : null,
+    after: visibleDeep(JSON.parse(p.after_json) as Record<string, unknown>),
+    reason: visible(p.reason),
     status: p.status,
     expiresAt: p.expires_at,
     ...(token ? { token } : {}),

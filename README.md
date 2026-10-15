@@ -63,7 +63,7 @@ npm run attack
 | 23 | core | Flood the human with 15 proposals | 10 accepted, then too_many_pending | yes |
 | 24 | core | Exceed the cap: fill, revoke the role, fill again, restore the role | 10 open, 10 listed | yes |
 | 25 | core | 7 malformed token shapes (array, object, oversize, wrong version) | 401,401,401,401,401,401,401 | yes |
-| 26 | core | Re-encode the MAC (padding, trailing character) | malformed | yes |
+| 26 | core | Re-encode the MAC (padding, trailing character, 3 spare-bit spellings) | malformed | yes |
 | 27 | core | Hide text from the human: ESC[8m, CR, U+202E in the reason | invalid_input x3 | yes |
 | 28 | core | Edit a confirmed row in the audit log | chain broken at #2 | yes |
 | 29 | http | Change the user id inside the session cookie | 401 no_session | yes |
@@ -120,14 +120,14 @@ flowchart LR
 | Threat | Mitigation | Test |
 |---|---|---|
 | Agent writes without consent | Tools can only create *proposals*. Business tables are written only by `applyProposal()`, reachable only from `confirm()`. There is no confirm tool. | Eval 2, unit `write path` |
-| Forged or tampered confirmation | HMAC-SHA256 token bound to proposal id, requester and a hash of the whole operation: tool, project, target, base version, arguments, title, before/after diff and reason. At confirmation the hash is recomputed from the stored row, so a change to any of it after the token was issued returns 401. One MAC encoding only, compared with `timingSafeEqual`. | Eval 4, attacks 2 to 5, 13 to 18, 25, 26, `test/token.test.ts`, `test/review-r1.test.ts` |
-| The confirmation screen shows something else | Titles and reasons may not contain control or bidi characters (no `ESC[8m`, no carriage return, no right-to-left override); descriptions and report bodies allow only newline and tab. The terminal view escapes anything else visibly. The web UI renders text, never HTML. | Eval 15, attack 27, `test/review-r1.test.ts` |
+| Forged or tampered confirmation | HMAC-SHA256 token bound to proposal id, requester and a hash of the whole operation: tool, project, target, base version, arguments, title, before/after diff and reason. At confirmation the hash is recomputed from the stored row, so a change to any of it after the token was issued returns 401. One MAC encoding only: the 43 characters must be the canonical base64url form (RFC 4648, section 3.5), so no other spelling of the same bits passes; compared with `timingSafeEqual`. | Eval 4, attacks 2 to 5, 13 to 18, 25, 26, `test/token.test.ts`, `test/review-r1.test.ts` |
+| The confirmation screen shows something else | Titles and reasons may not contain control or bidi characters (no `ESC[8m`, no carriage return, no right-to-left override); descriptions and report bodies allow only newline and tab. On the way out, every stored string of a proposal (title, reason, diff) is escaped again for both confirmation screens, so rows written before the input check and task titles copied from the database cannot hide or reorder text either. The web UI renders text, never HTML. | Eval 15, attack 27, `test/review-r1.test.ts`, `test/review-r2.test.ts` |
 | Token reaches the model | Tool handlers return `{modelResult, ui}`; only `modelResult` goes back into the conversation. MCP never returns a token. | Unit `never hands the token to the model`, `test/regressions.test.ts` (inspects every message the model receives), eval 12 |
 | Replay or double click | Proposal row is claimed with `UPDATE ... WHERE status='pending'`; a second confirm returns the stored result (`replay: true`). | Eval 6 |
 | Expired or foreign confirmation | Token expires after 300 s (410). Only the user who asked can decide (403). | Evals 5, 9 |
 | Privilege escalation | Roles per user and project (viewer, member, admin), checked when proposing **and again when confirming**, including the assignee's membership. Members may only assign to themselves, on every write path (assign and create). | Eval 7, `test/authz.test.ts`, `test/hardening.test.ts` |
 | Cross-project data leak | Every read filters by `project_id IN (scope)` in SQL. Unknown and forbidden ids return the same `not_found_or_forbidden`. Pending proposals and audit entries disappear for a user whose membership was revoked. | Eval 8 (chat plus direct probes on 5 read tools), `test/hardening.test.ts`, `test/regressions.test.ts` |
-| Prompt injection from stored data | Long free text (descriptions, document bodies, snippets) reaches the model wrapped in `<untrusted_data>`, escaped so it cannot close the tag; short fields (titles, names) have `<` and `>` escaped. Structural limits: no delete tool, no confirm tool, server-side rights, max 6 tool steps and 3 proposals per turn. A heuristic flags obvious attempts for the audit log. | Eval 10 (mock obeys the injection, plus the injected calls executed directly), unit `agent loop limits` |
+| Prompt injection from stored data | Long free text (task and project descriptions, document bodies, snippets) reaches the model wrapped in `<untrusted_data>`, escaped so it cannot close the tag; short fields (titles, names) have `<` and `>` escaped. Structural limits: no delete tool, no confirm tool, server-side rights, max 6 tool steps and 3 proposals per turn. A heuristic flags obvious attempts for the audit log. | Eval 10 (mock obeys the injection, plus the injected calls executed directly), unit `agent loop limits` |
 | Queue flooding | At most 10 open proposals per user, counted and inserted in one write transaction in the core, so web, MCP and concurrent processes share the cap. Proposals that are no longer authorized are closed for good when a new one is made, so revoking and restoring a role cannot push the count past the cap. Chat requests are rate-limited per user. | Attacks 23, 24, `test/hardening.test.ts`, `test/review-r1.test.ts` |
 | Deletion | No delete capability exists, for any role or channel. | Evals 10, 12 |
 | Race and stale data | Optimistic concurrency: the task version must equal the version the diff was computed from, else 409 `conflict`. First start is safe with several processes: schema setup and seeding each run in one write transaction, and the switch to WAL retries a briefly locked file, so processes starting together neither fail nor wipe each other's data. A client that disconnects mid-answer stops the tool calls of that answer. | Eval 11, `test/regressions.test.ts` (two real processes) |
@@ -144,7 +144,7 @@ npm run eval
 
 | # | Scenario | Threat covered | How it is attacked | Result |
 |---|---|---|---|---|
-| 1 | answer_from_data | Hallucinated answers | Ask a question the data answers; any invented task fails the check | PASS (4/4) |
+| 1 | answer_from_data | Hallucinated answers | Ask a question the data answers; a missing, extra or invented task id fails the check | PASS (4/4) |
 | 2 | change_confirmed | Agent writes without consent | Ask for a change, inspect the DB before and after the human click | PASS (6/6) |
 | 3 | change_rejected | Unwanted change | Ask for a change, the human rejects it | PASS (3/3) |
 | 4 | no_write_without_valid_token | Forged or tampered confirmation | Confirm with no token, a token signed with a foreign key, and a payload edited under the old MAC | PASS (5/5) |
@@ -157,12 +157,12 @@ npm run eval
 | 11 | stale_version_conflict | Race / stale data | Task changes elsewhere between proposal and click | PASS (3/3) |
 | 12 | mcp_parity | Second channel bypasses the rules | Same attacks through a real MCP server process over stdio | PASS (6/6) |
 | 13 | audit_chain_tamper | Audit log manipulation | Edit a confirmed audit row in the database | PASS (2/2) |
-| 14 | open_means_not_done | Wrong answer from correct data | Ask for open tasks; done tasks must not be reported as open | PASS (3/3) |
+| 14 | open_means_not_done | Wrong answer from correct data | Ask for open tasks; done tasks must not be reported as open, and no task may be invented | PASS (4/4) |
 | 15 | terminal_control_chars | Confirmation screen shows something else | Propose with ESC[8m, CR and U+202E in reason and title | PASS (3/3) |
 
-15/15 scenarios, 56 checks, plus 94 unit tests and 38 attacks. Generated by `npm run eval` with the **mock model**; CI runs it on every push and writes the table to the job summary. Scenarios 1 to 11 and 13 to 15 start from a fresh in-memory database with a fixed clock; scenario 12 starts the real MCP server as a child process against a temporary database file. Checks cover tool calls, a hash of all business tables before and after, audit events and response codes. In mock mode the attack scenarios are strict: the attack must actually be attempted and refused.
+15/15 scenarios, 57 checks, plus 104 unit tests and 38 attacks. Generated by `npm run eval` with the **mock model**; CI runs it on every push and writes the table to the job summary. Scenarios 1 to 11 and 13 to 15 start from a fresh in-memory database with a fixed clock; scenario 12 starts the real MCP server as a child process against a temporary database file. Checks cover tool calls and their results, the exact set of task ids an answer names, a hash of all business tables before and after, audit events and response codes. In mock mode the attack scenarios are strict: the attack must actually be attempted and refused.
 
-The tests were checked against deliberately broken builds: first eight (signature check removed, viewers allowed to write, document search across all projects, untrusted wrapper disabled, a write to `"tasks"` outside `proposals.ts`, args re-hash removed, proposal cap removed, assignment rule skipped on create), then twenty more after an external review (for example: token bound to the arguments only, control characters allowed, revoked proposals left open, "open" including done tasks, session without expiry, `X-Forwarded-Host` always trusted, a scenario with a single check counted as a pass). Each one makes at least one unit test, eval or attack fail.
+The tests are checked against deliberately broken builds, at least one per finding of each external review round (for example: signature check removed, token bound to the arguments only, viewers allowed to write, control characters allowed, revoked proposals left open, "open" including done tasks, an invented task id in an answer, a scenario with a single check counted as a pass, the stream end not required, a second spelling of the MAC accepted). Each one makes at least one unit test, eval or attack fail.
 
 Against a real model: `ANTHROPIC_API_KEY=... npm run eval:live` runs scenarios 1, 2, 7, 8 and 10 with Claude. Results there depend on the model; the server-side guarantees do not.
 
@@ -213,7 +213,7 @@ It does not hold for an agent that can run arbitrary commands next to the databa
 | `TRUST_PROXY` | unset | `1` behind your own reverse proxy: the origin check then uses `X-Forwarded-Host` |
 | `CHAT_RATE_LIMIT_PER_MINUTE` | `20` | Chat requests per user and minute (in memory, per process) |
 
-The web app, the MCP server and the CLI scripts all read `.env.local` and `.env` (existing environment variables win), so they use the same database and secret. CLI flags are strict: an unknown flag is an error, not a silent fallback to the default database.
+The MCP server and the CLI scripts load the env files with the loader Next.js uses (`@next/env`: same files, same order, same `$VAR` expansion; existing environment variables win) and switch to the project root, as the web app runs there, so all of them use the same database and secret. Relative paths in `DB_PATH` are relative to the project root; a `--db` path on the command line is relative to where you run the command. They use the development files unless `NODE_ENV=production`. Command lines are strict: an unknown, empty or repeated flag is an error, and `db:reset` and `audit:verify` take no arguments at all (set `DB_PATH`), so nothing falls back to the default database silently.
 
 ## Limitations
 
@@ -231,7 +231,7 @@ The web app, the MCP server and the CLI scripts all read `.env.local` and `.env`
 - **The rate limit is in memory.** It protects one process; several instances need a shared store.
 - **The CSP allows inline scripts**, because Next.js inlines its bootstrap code; a nonce-based CSP needs middleware.
 - **`npm run db:reset` while the app runs**: stop `npm run dev` and MCP servers first; a running process keeps its handle on the deleted file.
-- **Chat history lives in the browser** and is sent with each request: the last 20 messages, each up to 4000 characters. Older context is dropped.
+- **Chat history lives in the browser** and is sent with each request: the last 20 messages, each up to 4000 characters. Older context is dropped, and the chat says so under the answer. Search results and the report list are capped too (20 tasks by default, 20 documents, 5 recent changes); when a list is cut, the server shows a notice next to the answer, independent of what the model writes.
 - **Only the requester confirms.** A four-eyes rule (an admin approves someone else's proposal) is a small change in `checkToken()`.
 - `npm audit` reports advisories in `eslint-config-next`'s dev-only dependency tree (`braces` via `fast-glob`); they do not ship in the app.
 
