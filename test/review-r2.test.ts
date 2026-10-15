@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { ArgsError, parseArgs } from '../mcp/args'
 import { loadEnvFrom } from '../scripts/env'
 import { chatHistory } from '@/app/components/stream'
-import { run } from '@/core/db'
+import { all, run } from '@/core/db'
 import { listPending } from '@/core/proposals'
 import { as, createTestCore } from '@/core/testing'
 import { executeTool, type UiEvent } from '@/core/tools'
@@ -83,13 +83,16 @@ describe('confirmation views escape stored text (review r2, F3)', () => {
       expect(view.title).toContain('\\u{202e}')
     }
     expect(listPending(core, 'bob').every((v) => isSafeLine(v.title))).toBe(true)
+    // Escaped when stored as well, not only when shown (the token signs the stored title).
+    expect(all<{ title: string }>(core.db, 'SELECT title FROM proposals').every((p) => isSafeLine(p.title))).toBe(true)
   })
 
   it('rows stored before the input check are escaped on the way out', () => {
     const core = createTestCore()
     executeTool(as(core, 'bob'), 'propose_create_task', { projectId: 'apollo', title: 'Plain', reason: 'Plain reason.' })
-    run(core.db, 'UPDATE proposals SET reason = ?, after_json = ?', `ok ${RLO}gnp.exe`, JSON.stringify({ title: `x${RLO}y` }))
+    run(core.db, 'UPDATE proposals SET title = ?, reason = ?, after_json = ?', `t${RLO}t`, `ok ${RLO}gnp.exe`, JSON.stringify({ title: `x${RLO}y` }))
     const [v] = listPending(core, 'bob')
+    expect(isSafeLine(v!.title)).toBe(true)
     expect(isSafeLine(v!.reason)).toBe(true)
     expect(isSafeLine(String(v!.after.title))).toBe(true)
   })
