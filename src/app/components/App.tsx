@@ -48,7 +48,11 @@ export default function App({ initial, hasSession }: { initial: AppState; hasSes
         <div className="badges">
           <span className="badge" title="Model used for the chat">model: {state.model}</span>
           <span className={`badge ${state.chain.ok ? 'ok' : 'bad'}`} title="Audit log hash chain">
-            {state.chain.ok ? `audit chain verified (${state.chain.rows})` : `audit chain broken at #${state.chain.firstBrokenSeq}`}
+            {!state.chain.ok
+              ? `audit chain broken at #${state.chain.firstBrokenSeq}`
+              : state.chain.rows === 0
+                ? 'audit log empty: every action will be hash-chained'
+                : `audit chain verified (${state.chain.rows} ${state.chain.rows === 1 ? 'entry' : 'entries'})`}
           </span>
         </div>
       </header>

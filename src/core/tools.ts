@@ -6,7 +6,7 @@ import type { Ctx } from './context'
 import { all, get, type Row } from './db'
 import { isKnownField } from './names'
 import { createProposal, MAX_OPEN_PROPOSALS, toView, type ProposalTool, type ProposalView } from './proposals'
-import { detectInjection, escapeTags as esc, wrapUntrusted } from './untrusted'
+import { detectInjection, escapeTags as esc, isSafeLine, isSafeText, wrapUntrusted } from './untrusted'
 
 // ---------------------------------------------------------------------------
 // Shared field schemas. The actor is NEVER a field: it comes from the session.
@@ -17,7 +17,11 @@ const TaskId = z.string().regex(/^T-\d{1,9}$/).describe('Task id, e.g. "T-3"')
 const DocumentId = z.string().regex(/^D-\d{1,9}$/).describe('Document id, e.g. "D-1"')
 const UserId = z.string().regex(/^[a-z]{1,20}$/).describe('User id, e.g. "bob"')
 const Status = z.enum(['todo', 'in_progress', 'blocked', 'done'])
-const Reason = z.string().min(5).max(300).describe('Why this change is proposed. Shown to the human and written to the audit log.')
+// Text a human reads before confirming must not carry control or bidi characters (see untrusted.ts).
+const NO_CONTROL = 'control and bidi characters are not allowed'
+const Line = (min: number, max: number) => z.string().min(min).max(max).refine(isSafeLine, NO_CONTROL)
+const Text = (min: number, max: number) => z.string().min(min).max(max).refine(isSafeText, NO_CONTROL)
+const Reason = Line(5, 300).describe('Why this change is proposed. Shown to the human and written to the audit log.')
 
 export type UiEvent =
   | { type: 'proposal'; proposal: ProposalView }
@@ -151,7 +155,7 @@ export const TOOLS = [
     name: 'search_tasks',
     title: 'Search tasks',
     description:
-      'Search tasks in projects the user can access. Filters are optional. Returns ids, titles, status, assignee, due date and an overdue flag (no descriptions; use get_task for details).',
+      'Search tasks in projects the user can access. Filters are optional; openOnly excludes done tasks. Returns ids, titles, status, assignee, due date and an overdue flag (no descriptions; use get_task for details). If "truncated" is present, say so in the answer.',
     schema: z
       .object({
         projectId: ProjectId.optional(),
@@ -159,6 +163,7 @@ export const TOOLS = [
         assigneeId: UserId.optional(),
         query: z.string().max(200).optional().describe('Case-insensitive text match on the title'),
         overdueOnly: z.boolean().optional(),
+        openOnly: z.boolean().optional().describe('Only tasks that are not done'),
         limit: z.number().int().min(1).max(50).optional(),
       })
       .strict(),
@@ -177,6 +182,7 @@ export const TOOLS = [
       if (input.assigneeId) add('assignee_id = ?', input.assigneeId)
       if (input.query) add("title LIKE ? ESCAPE '\\'", `%${input.query.replace(/[\\%_]/g, (c) => '\\' + c)}%`)
       if (input.overdueOnly) add("due_date < ? AND status != 'done'", today(ctx))
+      if (input.openOnly) where.push("status != 'done'")
       const limit = input.limit ?? 20
       const total = get<{ n: number }>(ctx.db, `SELECT COUNT(*) AS n FROM tasks WHERE ${where.join(' AND ')}`, ...params)?.n ?? 0
       const rows = all<TaskRow>(ctx.db, `SELECT * FROM tasks WHERE ${where.join(' AND ')} ORDER BY CAST(substr(id, 3) AS INTEGER) LIMIT ?`, ...params, limit)
@@ -310,8 +316,8 @@ export const TOOLS = [
     schema: z
       .object({
         projectId: ProjectId,
-        title: z.string().min(3).max(120),
-        description: z.string().max(2000).optional(),
+        title: Line(3, 120),
+        description: Text(0, 2000).optional(),
         assigneeId: UserId.optional(),
         dueDate: z.iso.date().optional(),
         reason: Reason,
@@ -381,7 +387,7 @@ export const TOOLS = [
     name: 'propose_save_report',
     title: 'Propose: save report',
     description: 'Propose saving a written status report as a project document. Nothing is saved until the user confirms.',
-    schema: z.object({ projectId: ProjectId, title: z.string().min(3).max(120), body: z.string().min(20).max(4000), reason: Reason }).strict(),
+    schema: z.object({ projectId: ProjectId, title: Line(3, 120), body: Text(20, 4000), reason: Reason }).strict(),
     readOnly: false,
     handler: (ctx, input, ui) => {
       visibleProject(ctx, input.projectId)

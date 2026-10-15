@@ -24,6 +24,7 @@ export const FIELD_NAMES = [
   'documentId',
   'dueDate',
   'limit',
+  'openOnly',
   'overdueOnly',
   'projectId',
   'query',

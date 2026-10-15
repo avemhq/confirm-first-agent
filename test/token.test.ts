@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { signToken, verifyToken, type TokenPayload } from '@/core/proposals'
 
 const secret = Buffer.from('k'.repeat(32))
-const payload: TokenPayload = { pid: 'P-1', sub: 'bob', ah: 'a'.repeat(64), bv: 3, exp: 2_000_000_000 }
+const payload: TokenPayload = { pid: 'P-1', sub: 'bob', oh: 'a'.repeat(64), exp: 2_000_000_000 }
 
 describe('confirmation token', () => {
   it('round-trips a valid token', () => {
@@ -27,7 +27,7 @@ describe('confirmation token', () => {
 
   it('handles MACs of the wrong length without throwing', () => {
     const [v1, body] = signToken(secret, payload).split('.') as [string, string]
-    expect(verifyToken(secret, `${v1}.${body}.abc`)).toMatchObject({ ok: false, reason: 'bad_signature' })
+    expect(verifyToken(secret, `${v1}.${body}.abc`)).toMatchObject({ ok: false, reason: 'malformed' })
     expect(verifyToken(secret, `${v1}.${body}.`)).toMatchObject({ ok: false })
   })
 

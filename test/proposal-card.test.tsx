@@ -70,4 +70,21 @@ describe('ProposalCard', () => {
       globalThis.fetch = saved
     }
   })
+  it('a 200 with a body that is not the server answer is not shown as a final result', async () => {
+    const saved = globalThis.fetch
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response('<html>proxy</html>', { status: 200 }))
+    try {
+      hooks.values = []
+      const onDecided = vi.fn()
+      const confirm = buttons(render(onDecided)).find((b) => b.props.children === 'Confirm')!
+      await confirm.props.onClick()
+      const tree = render(onDecided)
+      expect(JSON.stringify(tree)).toContain('Unexpected response (HTTP 200)')
+      expect(JSON.stringify(tree)).not.toContain('200: error')
+      expect(buttons(tree).find((b) => b.props.children === 'Confirm')?.props.disabled).toBe(false)
+      expect(onDecided).toHaveBeenCalledTimes(1)
+    } finally {
+      globalThis.fetch = saved
+    }
+  })
 })

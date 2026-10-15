@@ -3,6 +3,16 @@
 import { useEffect, useState } from 'react'
 import type { ProposalView } from './types'
 
+/** The server's JSON answer, or null for anything else (e.g. a proxy error page). */
+function parseBody(text: string): { ok?: unknown; message?: unknown } | null {
+  try {
+    const v: unknown = JSON.parse(text)
+    return v && typeof v === 'object' ? (v as { ok?: unknown; message?: unknown }) : null
+  } catch {
+    return null
+  }
+}
+
 const fmt = (v: unknown) => (v === null || v === undefined || v === '' ? '(none)' : String(v))
 
 export default function ProposalCard({ proposal, onDecided }: { proposal: ProposalView; onDecided: () => void }) {
@@ -29,13 +39,13 @@ export default function ProposalCard({ proposal, onDecided }: { proposal: Propos
       // Reading the body can still fail in transit: that must reach the network-error path below,
       // not be shown as a final error (the change may already be applied).
       const text = await res.text()
-      let body: { ok?: boolean; message?: string } = {}
-      try {
-        body = JSON.parse(text) as typeof body
-      } catch {
-        // Not JSON (e.g. a proxy error page): show the status code.
+      const body = parseBody(text)
+      if (!body || typeof body.ok !== 'boolean' || typeof body.message !== 'string') {
+        // Not a server answer we understand: do not show a final verdict. The re-sync below shows the truth.
+        setNetError(`Unexpected response (HTTP ${res.status}). Check the board and the Pending panel; retrying is safe.`)
+        return
       }
-      setResult({ ok: !!body.ok, message: `${res.status}: ${body.message ?? 'error'}` })
+      setResult({ ok: body.ok, message: `${res.status}: ${body.message}` })
     } catch {
       // The request may or may not have reached the server. Retrying is safe: confirm is idempotent.
       setNetError('Network error. The server may or may not have received this; you can safely try again.')

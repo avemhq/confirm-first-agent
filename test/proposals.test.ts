@@ -40,7 +40,7 @@ describe('proposals', () => {
   it('rejects a token whose args hash does not match the stored args', () => {
     const { core, proposal } = propose()
     const p = getProposal(core.db, proposal.id)!
-    const forged = signToken(core.secret, { pid: p.id, sub: 'bob', ah: sha256(canonicalJson({ taskId: 'T-3', status: 'blocked' })), bv: 1, exp: 9e9 })
+    const forged = signToken(core.secret, { pid: p.id, sub: 'bob', oh: sha256(canonicalJson({ taskId: 'T-3', status: 'blocked' })), exp: 9e9 })
     expect(confirm(core, { proposalId: p.id, token: forged, userId: 'bob', channel: 'web' }).status).toBe(401)
     // Tampering the stored args directly also breaks the binding.
     run(core.db, `UPDATE proposals SET args_hash = ? WHERE id = ?`, 'x'.repeat(64), p.id)
@@ -81,21 +81,34 @@ describe('proposals', () => {
 })
 
 describe('write path', () => {
-  // Structural guarantee: business tables are written in exactly one module.
-  it('only proposals.ts writes to tasks or documents', () => {
-    const offenders: string[] = []
-    const walk = (dir: string) => {
-      for (const f of readdirSync(dir)) {
-        const p = join(dir, f)
-        if (statSync(p).isDirectory()) walk(p)
-        else if (/\.(ts|tsx)$/.test(f) && !p.endsWith(join('core', 'proposals.ts')) && !p.endsWith(join('core', 'seed.ts'))) {
-          const src = readFileSync(p, 'utf8')
-          if (/(UPDATE|INSERT\s+(OR\s+\w+\s+)?INTO|REPLACE\s+INTO|DELETE\s+FROM)\s+["'`\[]?(main\.)?(tasks|documents)\b/i.test(src)) offenders.push(p)
-        }
-      }
+  const WRITE = /(UPDATE|INSERT\s+(OR\s+\w+\s+)?INTO|REPLACE\s+INTO|DELETE\s+FROM)\s+["'`\[]?(main\.)?(tasks|documents)\b/i
+  const root = join(__dirname, '..')
+  const files: string[] = []
+  const walk = (dir: string) => {
+    for (const f of readdirSync(dir)) {
+      const p = join(dir, f)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.(ts|tsx)$/.test(f)) files.push(p)
     }
-    walk(join(__dirname, '..', 'src'))
-    walk(join(__dirname, '..', 'mcp'))
-    expect(offenders).toEqual([])
+  }
+  for (const d of ['src', 'mcp', 'scripts', 'evals', 'attacks']) walk(join(root, d))
+  const rel = (p: string) => p.slice(root.length + 1).split('\\').join('/')
+
+  // Structural guarantee: at runtime, business tables are written in exactly one module.
+  // The exact list, so any new writer fails the test. evals/ and attacks/ write on purpose: they simulate
+  // "someone changed the task elsewhere" on throwaway databases.
+  it('only proposals.ts (and the seed) write to tasks or documents', () => {
+    const writers = files.filter((p) => WRITE.test(readFileSync(p, 'utf8'))).map(rel).sort()
+    expect(writers).toEqual(['attacks/run.ts', 'evals/scenarios.ts', 'src/core/proposals.ts', 'src/core/seed.ts'])
+  })
+
+  // The seed is the one other writer, so it may only run on an empty database or an explicit reset.
+  it('the seed module is imported only by the runtime (seedIfEmpty) and the reset script', () => {
+    const importers = files
+      .filter((p) => /from\s+['"][^'"]*\/seed['"]/.test(readFileSync(p, 'utf8')))
+      .map(rel)
+      .filter((p) => !p.startsWith('evals/') && !p.startsWith('attacks/'))
+      .sort()
+    expect(importers).toEqual(['scripts/reset-db.ts', 'src/core/runtime.ts', 'src/core/testing.ts'])
   })
 })

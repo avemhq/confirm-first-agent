@@ -183,6 +183,8 @@ function decide(text: string, step: number, results: ToolResult[], adversarial: 
       if (p) input.projectId = p
       if (/\bblocked\b/i.test(t)) input.status = 'blocked'
       if (/\boverdue\b/i.test(t)) input.overdueOnly = true
+      // "open" means not done; blocked and overdue already imply that.
+      if (/\bopen\b/i.test(t) && !input.status && !input.overdueOnly) input.openOnly = true
       return { calls: [{ name: 'search_tasks', input }] }
     }
     const r = last(results)!
@@ -190,7 +192,9 @@ function decide(text: string, step: number, results: ToolResult[], adversarial: 
     const tasks = r.data.tasks as { id: string; title: string; assigneeId: string | null; dueDate: string | null; status: string }[]
     if (!tasks.length) return { text: 'No matching tasks.' }
     const lines = tasks.map((x) => `- ${x.id} ${x.title} (${x.status}, ${x.assigneeId ?? 'unassigned'}, due ${x.dueDate ?? 'n/a'})`)
-    return { text: `Found ${tasks.length}:\n${lines.join('\n')}` }
+    const total = typeof r.data.total === 'number' ? r.data.total : tasks.length
+    const more = r.data.truncated ? `\n(${String(r.data.truncated)})` : ''
+    return { text: `Found ${total}${total > tasks.length ? `, showing ${tasks.length}` : ''}:\n${lines.join('\n')}${more}` }
   }
 
   if (/\bprojects?\b/i.test(t)) {

@@ -57,9 +57,33 @@ export interface ProposalView {
 export interface TokenPayload {
   pid: string // proposal id
   sub: string // the only user allowed to confirm
-  ah: string // sha256 of the canonical args: any change to the args invalidates the token
-  bv: number | null // task version the diff was computed against
+  /**
+   * sha256 of the canonical operation: requester, channel, tool, project, target, base version, args,
+   * title, before/after diff and reason. Everything the human was shown and everything that would be
+   * applied; changing any of it after the token was issued invalidates the token.
+   */
+  oh: string
   exp: number // unix seconds
+}
+
+/** The canonical operation a token is bound to (see TokenPayload.oh). */
+export function operationHash(p: ProposalRow): string {
+  return sha256(
+    canonicalJson({
+      v: 2,
+      actor: p.actor_id,
+      channel: p.channel,
+      tool: p.tool,
+      project: p.project_id,
+      target: p.target_id,
+      baseVersion: p.base_version,
+      args: p.args_json,
+      title: p.title,
+      before: p.before_json,
+      after: p.after_json,
+      reason: p.reason,
+    }),
+  )
 }
 
 const b64u = (b: Buffer | string) => Buffer.from(b).toString('base64url')
@@ -77,12 +101,14 @@ export function verifyToken(secret: Buffer, token: unknown): VerifyResult {
   const parts = token.split('.')
   if (parts.length !== 3 || parts[0] !== 'v1') return { ok: false, reason: 'malformed' }
   const [, payloadB64, macB64] = parts as [string, string, string]
+  // Exactly one encoding of a 32-byte MAC is accepted (no padding, no trailing characters).
+  if (!/^[A-Za-z0-9_-]{43}$/.test(macB64)) return { ok: false, reason: 'malformed' }
   const expected = createHmac('sha256', secret).update(`v1.${payloadB64}`).digest()
   const given = Buffer.from(macB64, 'base64url')
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return { ok: false, reason: 'bad_signature' }
   try {
     const p = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as TokenPayload
-    if (typeof p.pid !== 'string' || typeof p.sub !== 'string' || typeof p.ah !== 'string' || typeof p.exp !== 'number') {
+    if (typeof p.pid !== 'string' || typeof p.sub !== 'string' || typeof p.oh !== 'string' || typeof p.exp !== 'number') {
       return { ok: false, reason: 'malformed_payload' }
     }
     return { ok: true, payload: p }
@@ -128,8 +154,7 @@ export function tokenFor(core: Core, p: ProposalRow): string {
   return signToken(core.secret, {
     pid: p.id,
     sub: p.actor_id,
-    ah: p.args_hash,
-    bv: p.base_version,
+    oh: operationHash(p),
     exp: Math.floor(Date.parse(p.expires_at) / 1000),
   })
 }
@@ -164,6 +189,7 @@ export function createProposal(ctx: Ctx, np: NewProposal): { row: ProposalRow; t
     result_json: null,
   }
   const ok = tx(ctx.db, () => {
+    expireRevoked(ctx)
     if (countOpen(ctx, ctx.actorId) >= MAX_OPEN_PROPOSALS) return false
     run(
       ctx.db,
@@ -226,9 +252,29 @@ function authorize(core: Core, p: ProposalRow): AuthzError | null {
  * is still allowed to make: a revoked membership hides them (and confirm would refuse them anyway).
  */
 export function listPending(core: Core, userId: string): ProposalView[] {
-  return openAuthorized(core, userId)
-    .slice(0, MAX_OPEN_PROPOSALS)
-    .map((p) => toView(p, tokenFor(core, p)))
+  // No slice: the cap holds (see expireRevoked), and a list must never hide open proposals silently.
+  return openAuthorized(core, userId).map((p) => toView(p, tokenFor(core, p)))
+}
+
+/**
+ * Pending proposals of the actor that are no longer authorized are closed for good ('expired') before a
+ * new one is counted. Revoked proposals do not block new ones, and restoring the role later cannot bring
+ * them back on top of new ones: the cap holds across revoke and restore.
+ */
+function expireRevoked(ctx: Ctx): void {
+  const now = ctx.clock.now().toISOString()
+  const pending = all<ProposalRow>(
+    ctx.db, "SELECT * FROM proposals WHERE actor_id = ? AND status = 'pending' AND expires_at > ?", ctx.actorId, now,
+  )
+  for (const p of pending) {
+    const denied = authorize(ctx, p)
+    if (!denied) continue
+    run(ctx.db, "UPDATE proposals SET status = 'expired', decided_at = ? WHERE id = ? AND status = 'pending'", now, p.id)
+    appendAudit(ctx.db, ctx.clock, {
+      actorId: ctx.actorId, channel: ctx.channel, event: 'expired', outcome: 'revoked', tool: p.tool, proposalId: p.id,
+      detail: 'closed: no longer authorized when a new proposal was made', detailTrusted: true,
+    })
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,10 +346,10 @@ function checkToken(core: Core, input: DecisionInput, verb: 'confirm' | 'reject'
     audit('token_invalid', `user ${input.userId} is not the requester ${p.actor_id}`)
     return fail(403, 'not_requester', 'Only the user who asked for this change can decide on it.')
   }
-  // The signed hash must match the stored hash AND the arguments that would actually be applied.
-  if (v.payload.ah !== p.args_hash || v.payload.ah !== sha256(p.args_json) || v.payload.bv !== p.base_version) {
-    audit('token_invalid', 'arguments changed after the token was issued')
-    return fail(401, 'token_invalid', 'Token does not match the proposed arguments.')
+  // The signed operation hash must match the operation that would actually be applied and shown.
+  if (v.payload.oh !== operationHash(p) || p.args_hash !== sha256(p.args_json)) {
+    audit('token_invalid', 'proposal changed after the token was issued')
+    return fail(401, 'token_invalid', 'Token does not match the proposed change.')
   }
   return { ok: true, p, payload: v.payload }
 }

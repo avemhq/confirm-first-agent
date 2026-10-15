@@ -33,3 +33,34 @@ const INJECTION_PATTERNS: RegExp[] = [
 export function detectInjection(text: string): boolean {
   return INJECTION_PATTERNS.some((re) => re.test(text))
 }
+
+/**
+ * C0/C1 control characters, line/paragraph separators and Unicode bidi overrides. In a terminal they
+ * can hide or recolour text (ESC[8m), rewrite a line (CR) or reorder it visually (U+202E), so a
+ * confirmation prompt could show something other than what will be applied.
+ */
+// Built from code points (not escapes in a literal) so editors and formatters cannot turn them into
+// invisible characters in this file.
+const ranges: [number, number][] = [
+  [0x00, 0x1f], // C0 controls, including ESC, CR, LF, TAB
+  [0x7f, 0x9f], // DEL and C1 controls
+  [0x061c, 0x061c], // Arabic letter mark
+  [0x200e, 0x200f], // LRM, RLM
+  [0x2028, 0x2029], // line and paragraph separator
+  [0x202a, 0x202e], // bidi embeddings and overrides
+  [0x2066, 0x2069], // bidi isolates
+]
+const hex = (n: number) => `\\u${n.toString(16).padStart(4, '0')}`
+const CLASS = `[${ranges.map(([a, b]) => (a === b ? hex(a) : `${hex(a)}-${hex(b)}`)).join('')}]`
+const UNSAFE = new RegExp(CLASS)
+const UNSAFE_ALL = new RegExp(CLASS, 'g')
+
+/** One-line fields (titles, reasons): no control or bidi characters at all. */
+export const isSafeLine = (s: string): boolean => !UNSAFE.test(s)
+
+/** Multi-line fields (descriptions, report bodies): newline and tab are fine, nothing else. */
+export const isSafeText = (s: string): boolean => !UNSAFE.test(s.replace(/[\n\t]/g, ''))
+
+/** For terminal output: every control or bidi character becomes a visible \u{..} escape. */
+export const visible = (s: string): string =>
+  s.replace(UNSAFE_ALL, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`)

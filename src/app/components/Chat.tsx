@@ -35,6 +35,9 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
   const abortRef = useRef<AbortController | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
 
+  // Leaving the page (or switching user) cancels a running turn instead of letting it finish unseen.
+  useEffect(() => () => abortRef.current?.abort(), [])
+
   // Keep the newest message in view by scrolling the list itself, never the page.
   useEffect(() => {
     const el = listRef.current
@@ -86,10 +89,19 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
         body: JSON.stringify({ messages: history }),
         signal: ctrl.signal,
       })
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok || !res.body) {
+        const body = (await res.json().catch(() => null)) as { message?: string } | null
+        throw new Error(body?.message ?? `HTTP ${res.status}`)
+      }
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''
+      let finished = false
+      const handle = (line: string) => {
+        const e = JSON.parse(line) as AgentEvent
+        if (e.type === 'done') finished = true
+        apply(e)
+      }
       for (;;) {
         const { value, done } = await reader.read()
         if (done) break
@@ -98,8 +110,14 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
         while ((nl = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, nl).trim()
           buf = buf.slice(nl + 1)
-          if (line) apply(JSON.parse(line) as AgentEvent)
+          if (line) handle(line)
         }
+      }
+      buf += decoder.decode()
+      if (buf.trim()) handle(buf.trim())
+      // The server always ends a turn with a "done" event. Without it the answer was cut off in transit.
+      if (!finished && !ctrl.signal.aborted) {
+        apply({ type: 'error', message: 'The answer was cut off. Pending proposals and the board below show the real state.' })
       }
     } catch (err) {
       if (!ctrl.signal.aborted) apply({ type: 'error', message: err instanceof Error ? err.message : 'request failed' })
@@ -140,13 +158,17 @@ export default function Chat({ onChanged }: { onChanged: () => void }) {
                   if (s.kind === 'denied')
                     return (
                       <div key={j} className="step bad">
-                        Server refused <span className="mono">{s.tool}</span>: {s.detail}
+                        <span>
+                          Server refused <span className="mono">{s.tool}</span>: {s.detail}
+                        </span>
                       </div>
                     )
                   if (s.kind === 'flag')
                     return (
                       <div key={j} className="step warn">
-                        Injection attempt detected in <span className="mono">{s.source}</span>. Logged; the data is treated as data.
+                        <span>
+                          Injection attempt detected in <span className="mono">{s.source}</span>. Logged; the data is treated as data.
+                        </span>
                       </div>
                     )
                   return (

@@ -21,7 +21,8 @@
     "mcp": "tsx mcp/server.ts",
     "confirm": "tsx mcp/confirm-cli.ts",
     "db:reset": "tsx scripts/reset-db.ts",
-    "audit:verify": "tsx scripts/audit-verify.ts"
+    "audit:verify": "tsx scripts/audit-verify.ts",
+    "attack": "tsx attacks/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.131.0",

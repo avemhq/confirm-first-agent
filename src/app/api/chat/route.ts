@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { runTurn } from '@/core/agent'
 import type { AgentEvent } from '@/core/models/types'
 import { createModel, getCore } from '@/core/runtime'
+import { chatLimiter } from '@/server/rate-limit'
 import { json, sameOrigin, sessionUser } from '@/server/session'
 
 export const runtime = 'nodejs'
@@ -21,6 +22,7 @@ export async function POST(req: Request) {
   if (!sameOrigin(req)) return json(403, { error: 'bad_origin' })
   const user = await sessionUser()
   if (!user) return json(401, { error: 'no_session' })
+  if (!chatLimiter.take(user, Date.now())) return json(429, { error: 'rate_limited', message: 'Too many messages. Wait a minute.' })
   const parsed = Body.safeParse(await req.json().catch(() => null))
   if (!parsed.success || parsed.data.messages.at(-1)?.role !== 'user') return json(400, { error: 'invalid_body' })
 
