@@ -2,7 +2,7 @@
 
 A chat agent for a B2B project app that can act, but never writes without a human click.
 
-[![ci](https://github.com/<org>/confirm-first-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/<org>/confirm-first-agent/actions/workflows/ci.yml)
+[![ci](https://github.com/avemhq/confirm-first-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/avemhq/confirm-first-agent/actions/workflows/ci.yml)
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![node: 24+](https://img.shields.io/badge/node-24%2B-brightgreen)
 
@@ -13,7 +13,7 @@ Teams want an assistant inside their product that answers questions from their o
 ## 60-second demo
 
 ```bash
-git clone https://github.com/<org>/confirm-first-agent && cd confirm-first-agent
+git clone https://github.com/avemhq/confirm-first-agent && cd confirm-first-agent
 npm ci
 npm run demo          # resets .data/demo.db and starts http://localhost:3000
 ```
@@ -245,6 +245,12 @@ The web app, the MCP server and the CLI scripts all read `.env.local` and `.env`
 
 `npm run demo` · `dev` · `build` · `lint` · `typecheck` · `test` (vitest) · `eval` · `eval:live` · `attack` · `mcp` · `confirm` · `db:reset` · `audit:verify` (read-only, fails on a missing file)
 
+## About
+
+Your expertise, your AI agents. Bring me the task that eats your team's week: we check together whether and how much of it AI can take on, then I build the agreed solution with Claude Code and hand it over to your team, with documentation and training.
+
+This repository shows one part of that work in the open: an agent that is allowed to act inside a business app, with its guarantees enforced and tested on the server. All users, projects and tasks in the demo data are fictional.
+
 ---
 
-Built by [Avem Investment GmbH, Switzerland](https://avem-investment.ch). MIT licensed, see [LICENSE](LICENSE).
+Built by Patric Vogel, Avem Investment GmbH, Switzerland. MIT licensed, see [LICENSE](LICENSE).
