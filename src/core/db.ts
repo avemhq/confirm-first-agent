@@ -12,15 +12,24 @@ export function openDb(path: string): Db {
   const db = new DatabaseSync(path)
   db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL;')
-  const fresh = !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1").get()
-  const version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
-  if (!fresh && version !== SCHEMA_VERSION) {
+  // Check, create and stamp the schema in one write transaction: a second process starting at the
+  // same moment waits here instead of seeing tables without a version stamp.
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const fresh = !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1").get()
+    const version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
+    if (!fresh && version !== SCHEMA_VERSION) {
+      // No silent migration: the audit hash chain covers every column, so old rows cannot be rewritten.
+      throw new Error(`Database ${path} has schema version ${version}, expected ${SCHEMA_VERSION}. Run "npm run db:reset" (demo data only).`)
+    }
+    db.exec(SCHEMA_SQL)
+    if (fresh) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+    db.exec('COMMIT')
+  } catch (err) {
+    db.exec('ROLLBACK')
     db.close()
-    // No silent migration: the audit hash chain covers every column, so old rows cannot be rewritten.
-    throw new Error(`Database ${path} has schema version ${version}, expected ${SCHEMA_VERSION}. Run "npm run db:reset" (demo data only).`)
+    throw err
   }
-  db.exec(SCHEMA_SQL)
-  if (fresh) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
   return db
 }
 

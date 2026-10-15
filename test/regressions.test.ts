@@ -40,18 +40,22 @@ describe('first start, two processes', () => {
       const path = join(dir, 'demo.db')
       const clock = new FixedClock(SEED_TIME)
       const a = openDb(path)
-      // A holds the write lock: it has seeded and changed T-3 but not committed yet.
-      a.exec('BEGIN IMMEDIATE')
-      expect(seedIfEmpty(a, clock)).toBe(true)
-      run(a, "UPDATE tasks SET status = 'done', version = version + 1 WHERE id = 'T-3'")
-      const child = spawn(process.execPath, ['--import', 'tsx', resolve('test/fixtures/seed-child.ts'), path], { stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn(process.execPath, ['--import', 'tsx', resolve('test/fixtures/seed-child.ts'), path], { stdio: ['pipe', 'pipe', 'pipe'] })
       let out = ''
       child.stdout.on('data', (d: Buffer) => (out += d.toString()))
       child.stderr.on('data', (d: Buffer) => (out += d.toString()))
-      // Let B open the file and reach its first-start check while A still holds the lock.
-      await new Promise<void>((ok) => { const t = setInterval(() => { if (out.includes('opened')) { clearInterval(t); setTimeout(ok, 300) } }, 20) })
+      const until = (cond: () => boolean) =>
+        new Promise<void>((ok) => { const t = setInterval(() => { if (cond()) { clearInterval(t); ok() } }, 20) })
+      await until(() => out.includes('opened') || child.exitCode !== null)
+      // A seeds and changes T-3 inside one transaction that it has not committed yet...
+      a.exec('BEGIN IMMEDIATE')
+      expect(seedIfEmpty(a, clock)).toBe(true)
+      run(a, "UPDATE tasks SET status = 'done', version = version + 1 WHERE id = 'T-3'")
+      // ...while B runs its first-start check. Before the fix B saw "empty" here and re-seeded later.
+      child.stdin.write('go\n')
+      await new Promise((ok) => setTimeout(ok, 400))
       a.exec('COMMIT')
-      const code = await new Promise<number | null>((ok) => child.on('close', ok))
+      const code = await new Promise<number | null>((ok) => (child.exitCode !== null ? ok(child.exitCode) : child.on('close', ok)))
       expect(out).toContain('seeded=false')
       expect(code).toBe(0)
       expect(get<{ status: string }>(a, "SELECT status FROM tasks WHERE id = 'T-3'")?.status).toBe('done')
@@ -60,6 +64,34 @@ describe('first start, two processes', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   }, 20_000)
+})
+
+describe('first start, schema', () => {
+  it('six processes opening one fresh database at once all start (5 rounds)', async () => {
+    const child = resolve('test/fixtures/open-child.ts')
+    const failures: string[] = []
+    for (let round = 0; round < 5; round++) {
+      const dir = mkdtempSync(join(tmpdir(), 'cfa-'))
+      try {
+        const path = join(dir, 'demo.db')
+        const outs = await Promise.all(
+          Array.from({ length: 6 }, () =>
+            new Promise<string>((ok) => {
+              const p = spawn(process.execPath, ['--import', 'tsx', child, path], { stdio: ['ignore', 'pipe', 'pipe'] })
+              let out = ''
+              p.stdout.on('data', (d: Buffer) => (out += d.toString()))
+              p.stderr.on('data', (d: Buffer) => (out += d.toString()))
+              p.on('close', () => ok(out))
+            }),
+          ),
+        )
+        failures.push(...outs.filter((o) => !o.startsWith('ok')))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+    expect(failures).toEqual([])
+  }, 60_000)
 })
 
 describe('audit rows without a project carry no model-chosen text', () => {

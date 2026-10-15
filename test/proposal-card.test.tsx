@@ -53,4 +53,21 @@ describe('ProposalCard', () => {
       globalThis.fetch = saved
     }
   })
+
+  it('a body cut off in transit is a network error, not a final result', async () => {
+    const saved = globalThis.fetch
+    const broken = new ReadableStream({ start: (c) => c.error(new TypeError('network error')) })
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(broken, { status: 200 }))
+    try {
+      hooks.values = []
+      const onDecided = vi.fn()
+      const confirm = buttons(render(onDecided)).find((b) => b.props.children === 'Confirm')!
+      await confirm.props.onClick()
+      const tree = render(onDecided)
+      expect(JSON.stringify(tree)).toContain('Network error')
+      expect(buttons(tree).find((b) => b.props.children === 'Confirm')?.props.disabled).toBe(false)
+    } finally {
+      globalThis.fetch = saved
+    }
+  })
 })

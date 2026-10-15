@@ -26,7 +26,15 @@ export default function ProposalCard({ proposal, onDecided }: { proposal: Propos
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: proposal.token }),
       })
-      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string }
+      // Reading the body can still fail in transit: that must reach the network-error path below,
+      // not be shown as a final error (the change may already be applied).
+      const text = await res.text()
+      let body: { ok?: boolean; message?: string } = {}
+      try {
+        body = JSON.parse(text) as typeof body
+      } catch {
+        // Not JSON (e.g. a proxy error page): show the status code.
+      }
       setResult({ ok: !!body.ok, message: `${res.status}: ${body.message ?? 'error'}` })
     } catch {
       // The request may or may not have reached the server. Retrying is safe: confirm is idempotent.
