@@ -1,6 +1,7 @@
+import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { runTurn } from '@/core/agent'
 import { FixedClock } from '@/core/clock'
@@ -30,6 +31,35 @@ describe('first start', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+})
+
+describe('first start, two processes', () => {
+  it('a process that starts while another is seeding never wipes its committed changes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cfa-'))
+    try {
+      const path = join(dir, 'demo.db')
+      const clock = new FixedClock(SEED_TIME)
+      const a = openDb(path)
+      // A holds the write lock: it has seeded and changed T-3 but not committed yet.
+      a.exec('BEGIN IMMEDIATE')
+      expect(seedIfEmpty(a, clock)).toBe(true)
+      run(a, "UPDATE tasks SET status = 'done', version = version + 1 WHERE id = 'T-3'")
+      const child = spawn(process.execPath, ['--import', 'tsx', resolve('test/fixtures/seed-child.ts'), path], { stdio: ['ignore', 'pipe', 'pipe'] })
+      let out = ''
+      child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+      child.stderr.on('data', (d: Buffer) => (out += d.toString()))
+      // Let B open the file and reach its first-start check while A still holds the lock.
+      await new Promise<void>((ok) => { const t = setInterval(() => { if (out.includes('opened')) { clearInterval(t); setTimeout(ok, 300) } }, 20) })
+      a.exec('COMMIT')
+      const code = await new Promise<number | null>((ok) => child.on('close', ok))
+      expect(out).toContain('seeded=false')
+      expect(code).toBe(0)
+      expect(get<{ status: string }>(a, "SELECT status FROM tasks WHERE id = 'T-3'")?.status).toBe('done')
+      a.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 20_000)
 })
 
 describe('audit rows without a project carry no model-chosen text', () => {
