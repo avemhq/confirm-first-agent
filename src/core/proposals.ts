@@ -185,13 +185,21 @@ export function getProposal(db: Db, id: string): ProposalRow | undefined {
   return get<ProposalRow>(db, 'SELECT * FROM proposals WHERE id = ?', id)
 }
 
-/** Open proposals that still count: pending, unexpired and still authorized (so revoked ones never block). */
-export function countOpen(core: Core, userId: string): number {
+/**
+ * Pending, unexpired proposals of one user that are still authorized, oldest first.
+ * Shared by the open-proposal cap and the Pending list, so both always agree: authorize first, then limit.
+ */
+function openAuthorized(core: Core, userId: string): ProposalRow[] {
   return all<ProposalRow>(
     core.db,
-    "SELECT * FROM proposals WHERE actor_id = ? AND status = 'pending' AND expires_at > ?",
+    "SELECT * FROM proposals WHERE actor_id = ? AND status = 'pending' AND expires_at > ? ORDER BY created_at, id",
     userId, core.clock.now().toISOString(),
-  ).filter((p) => authorize(core, p) === null).length
+  ).filter((p) => authorize(core, p) === null)
+}
+
+/** Open proposals that still count: revoked ones never block new ones. */
+export function countOpen(core: Core, userId: string): number {
+  return openAuthorized(core, userId).length
 }
 
 /** Re-check everything the proposal needs at decision time: role, assignment rule, assignee membership. */
@@ -218,13 +226,8 @@ function authorize(core: Core, p: ProposalRow): AuthzError | null {
  * is still allowed to make: a revoked membership hides them (and confirm would refuse them anyway).
  */
 export function listPending(core: Core, userId: string): ProposalView[] {
-  const now = core.clock.now().toISOString()
-  return all<ProposalRow>(
-    core.db,
-    "SELECT * FROM proposals WHERE actor_id = ? AND status = 'pending' AND expires_at > ? ORDER BY created_at LIMIT ?",
-    userId, now, MAX_OPEN_PROPOSALS,
-  )
-    .filter((p) => authorize(core, p) === null)
+  return openAuthorized(core, userId)
+    .slice(0, MAX_OPEN_PROPOSALS)
     .map((p) => toView(p, tokenFor(core, p)))
 }
 
@@ -266,7 +269,7 @@ type Checked = { ok: true; p: ProposalRow; payload: TokenPayload } | { ok: false
 function checkToken(core: Core, input: DecisionInput, verb: 'confirm' | 'reject'): Checked {
   const audit = (event: 'token_invalid' | 'expired', detail: string, outcome = 'refused') =>
     appendAudit(core.db, core.clock, {
-      actorId: input.userId, channel: input.channel, event, outcome, proposalId: input.proposalId, detail: `${verb}: ${detail}`,
+      actorId: input.userId, channel: input.channel, event, outcome, proposalId: input.proposalId, detail: `${verb}: ${detail}`, detailTrusted: true,
       // Only attach the project when the caller is the requester; otherwise it is not theirs to see.
       projectId: p && p.actor_id === input.userId ? p.project_id : null,
     })
@@ -378,7 +381,7 @@ export function confirm(core: Core, input: DecisionInput): DecisionResult {
     if (denied) {
       appendAudit(core.db, core.clock, {
         actorId: input.userId, channel: input.channel, event: 'denied', outcome: 'refused',
-        tool: p.tool, proposalId: p.id, detail: `confirm: ${denied.detail}`,
+        tool: p.tool, proposalId: p.id, detail: `confirm: ${denied.detail}`, detailTrusted: true,
       })
       return { status: 403, body: { ok: false, code: 'forbidden', message: 'You no longer have permission for this change.' } }
     }

@@ -15,8 +15,12 @@ export default function App({ initial, hasSession }: { initial: AppState; hasSes
   const [chatKey, setChatKey] = useState(0)
 
   const refresh = useCallback(async () => {
-    const res = await fetch('/api/state', { cache: 'no-store' })
-    if (res.ok) setState((await res.json()) as AppState)
+    try {
+      const res = await fetch('/api/state', { cache: 'no-store' })
+      if (res.ok) setState((await res.json()) as AppState)
+    } catch {
+      // Offline for a moment: keep the last known state; the next action refreshes again.
+    }
   }, [])
 
   useEffect(() => {

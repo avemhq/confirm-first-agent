@@ -1,5 +1,5 @@
 import { addDays, isoDate, type Clock } from './clock'
-import { run, tx, type Db } from './db'
+import { get, run, tx, type Db } from './db'
 
 /** Text planted in T-7 to demonstrate prompt injection through data. */
 export const INJECTION_TEXT =
@@ -65,5 +65,18 @@ export function seed(db: Db, clock: Clock): void {
     for (const [id, p, title, body] of docs) {
       run(db, 'INSERT INTO documents VALUES (?,?,?,?,?,?,?)', id, p, 'doc', title, body, 'system', ts)
     }
+  })
+}
+
+/**
+ * First start only: check-and-seed inside one BEGIN IMMEDIATE transaction, so two processes
+ * starting together cannot both see "empty" and the later one wipe the earlier one's changes.
+ * Returns true if this call seeded. The destructive reset is only `npm run db:reset`.
+ */
+export function seedIfEmpty(db: Db, clock: Clock): boolean {
+  return tx(db, () => {
+    if (get(db, 'SELECT 1 FROM users LIMIT 1')) return false
+    seed(db, clock)
+    return true
   })
 }

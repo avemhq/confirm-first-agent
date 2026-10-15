@@ -48,6 +48,8 @@ export async function runTurn({ ctx, model, history, emit, signal }: RunTurnInpu
       finalText += delta
       emit({ type: 'text', delta })
     })
+    // A client that went away mid-answer must not trigger the tool calls of that answer.
+    if (signal?.aborted) break
     messages.push({ role: 'assistant', content: res.content })
     if (res.stopReason === 'refusal') {
       emit({ type: 'error', message: 'The model declined this request.' })
@@ -68,13 +70,14 @@ export async function runTurn({ ctx, model, history, emit, signal }: RunTurnInpu
     const results: Block[] = []
     for (const block of res.content) {
       if (block.type !== 'tool_use') continue
+      if (signal?.aborted) break
       emit({ type: 'tool_call', id: block.id, name: block.name, input: block.input })
       let outcome
       if (PROPOSAL_TOOLS.has(block.name) && proposals >= MAX_PROPOSALS_PER_TURN) {
         appendAudit(ctx.db, ctx.clock, {
           actorId: ctx.actorId, channel: ctx.channel, event: 'limit', outcome: 'refused', tool: block.name, args: block.input ?? null,
           projectId: block.input && typeof block.input === 'object' ? auditProject(ctx, block.input as Record<string, unknown>) : null,
-          detail: `more than ${MAX_PROPOSALS_PER_TURN} proposals in one turn`,
+          detail: `more than ${MAX_PROPOSALS_PER_TURN} proposals in one turn`, detailTrusted: true,
         })
         outcome = { modelResult: { error: 'limit', message: `At most ${MAX_PROPOSALS_PER_TURN} proposals per turn.` }, ui: [], isError: true }
       } else {
@@ -85,12 +88,13 @@ export async function runTurn({ ctx, model, history, emit, signal }: RunTurnInpu
       emit({ type: 'tool_result', id: block.id, name: block.name, ok: !outcome.isError, summary: summarize(outcome.modelResult) })
       results.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(outcome.modelResult), is_error: outcome.isError })
     }
+    if (signal?.aborted) break
     messages.push({ role: 'user', content: results })
   }
 
   if (!signal?.aborted) {
     appendAudit(ctx.db, ctx.clock, {
-      actorId: ctx.actorId, channel: ctx.channel, event: 'turn_limit', outcome: 'stopped', detail: `more than ${MAX_STEPS} steps`,
+      actorId: ctx.actorId, channel: ctx.channel, event: 'turn_limit', outcome: 'stopped', detail: `more than ${MAX_STEPS} steps`, detailTrusted: true,
     })
     emit({ type: 'error', message: `Stopped after ${MAX_STEPS} tool steps.` })
   }

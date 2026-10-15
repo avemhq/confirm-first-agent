@@ -3,11 +3,11 @@ import { dirname, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { systemClock } from './clock'
 import type { Core } from './context'
-import { get, openDb } from './db'
+import { openDb } from './db'
 import { AnthropicModel } from './models/anthropic'
 import { MockModel } from './models/mock'
 import type { ModelClient } from './models/types'
-import { seed } from './seed'
+import { seedIfEmpty } from './seed'
 
 // Runtime path, not a bundled asset: tell Turbopack not to trace it.
 export const dbPath = () => resolve(/*turbopackIgnore: true*/ process.env.DB_PATH ?? '.data/demo.db')
@@ -50,7 +50,7 @@ export function getCore(): Core {
   const path = dbPath()
   mkdirSync(dirname(path), { recursive: true })
   const db = openDb(path)
-  if (!get(db, 'SELECT 1 FROM users LIMIT 1')) seed(db, systemClock)
+  seedIfEmpty(db, systemClock)
   core = { db, clock: systemClock, secret: loadSecret() }
   return core
 }

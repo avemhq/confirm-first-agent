@@ -4,6 +4,7 @@ import { assertCan, AuthzError, isMember, scopedProjectIds, type Role } from './
 import { isoDate } from './clock'
 import type { Ctx } from './context'
 import { all, get, type Row } from './db'
+import { isKnownField } from './names'
 import { createProposal, MAX_OPEN_PROPOSALS, toView, type ProposalTool, type ProposalView } from './proposals'
 import { detectInjection, escapeTags as esc, wrapUntrusted } from './untrusted'
 
@@ -426,8 +427,14 @@ export function executeTool(ctx: Ctx, name: string, rawInput: unknown): ToolOutc
   const parsed = spec.schema.safeParse(rawInput ?? {})
   if (!parsed.success) {
     const detail = parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ').slice(0, 500)
+    // The audit copy names only known fields and Zod issue codes: unknown keys are model text.
+    const auditDetail = parsed.error.issues
+      .map((i) => `${i.path.map((k) => (typeof k === 'number' || isKnownField(k) ? String(k) : '?')).join('.') || '(root)'}: ${i.code}`)
+      .join('; ')
+      .slice(0, 500)
     appendAudit(ctx.db, ctx.clock, {
-      actorId: ctx.actorId, channel: ctx.channel, event: 'invalid_input', outcome: 'refused', tool: name, args: rawInput ?? null, detail,
+      actorId: ctx.actorId, channel: ctx.channel, event: 'invalid_input', outcome: 'refused', tool: name, args: rawInput ?? null,
+      detail: auditDetail, detailTrusted: true,
     })
     return { modelResult: { error: 'invalid_input', message: detail }, ui, isError: true }
   }

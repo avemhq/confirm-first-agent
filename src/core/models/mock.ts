@@ -27,6 +27,8 @@ export class MockModel implements ModelClient {
       }
       content.push({ type: 'text', text: decision.text })
     }
+    // Like a real streamed response that was cancelled: no tool calls after an abort.
+    if (req.signal?.aborted) return { content, stopReason: 'end_turn' as StopReason }
     ;(decision.calls ?? []).forEach((c, i) => content.push({ type: 'tool_use', id: `mock_${step}_${i}`, name: c.name, input: c.input }))
     const stopReason: StopReason = decision.calls?.length ? 'tool_use' : 'end_turn'
     return { content, stopReason }

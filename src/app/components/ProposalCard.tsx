@@ -15,17 +15,26 @@ export default function ProposalCard({ proposal, onDecided }: { proposal: Propos
     return () => clearInterval(t)
   }, [proposal.expiresAt])
 
+  const [netError, setNetError] = useState<string | null>(null)
+
   const decide = async (decision: 'confirm' | 'reject') => {
     setBusy(true)
-    const res = await fetch(`/api/proposals/${encodeURIComponent(proposal.id)}/${decision}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: proposal.token }),
-    })
-    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string }
-    setResult({ ok: !!body.ok, message: `${res.status}: ${body.message ?? 'error'}` })
-    setBusy(false)
-    onDecided()
+    setNetError(null)
+    try {
+      const res = await fetch(`/api/proposals/${encodeURIComponent(proposal.id)}/${decision}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: proposal.token }),
+      })
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string }
+      setResult({ ok: !!body.ok, message: `${res.status}: ${body.message ?? 'error'}` })
+    } catch {
+      // The request may or may not have reached the server. Retrying is safe: confirm is idempotent.
+      setNetError('Network error. The server may or may not have received this; you can safely try again.')
+    } finally {
+      setBusy(false)
+      onDecided() // re-sync board, pending list and audit with the server either way
+    }
   }
 
   const keys = Array.from(new Set([...Object.keys(proposal.before ?? {}), ...Object.keys(proposal.after)]))
@@ -63,6 +72,7 @@ export default function ProposalCard({ proposal, onDecided }: { proposal: Propos
       <p className="small">
         <span className="muted">Agent&apos;s reason:</span> {proposal.reason}
       </p>
+      {netError && !result && <p className="small bad-text">{netError}</p>}
       {result ? (
         <p className={`small ${result.ok ? 'ok-text' : 'bad-text'}`}>{result.message}</p>
       ) : (

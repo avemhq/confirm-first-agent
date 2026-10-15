@@ -1,6 +1,7 @@
 import { canonicalJson, sha256 } from './canonical'
 import { all, get, run, tx, type Db } from './db'
 import type { Clock } from './clock'
+import { isKnownField, isKnownTool } from './names'
 
 export type Channel = 'web' | 'mcp' | 'cli' | 'system'
 export type AuditEvent =
@@ -34,6 +35,11 @@ export interface AuditInput {
   proposalId?: string | null
   confirmedBy?: string | null
   detail?: string | null
+  /**
+   * Set only when detail is built from server-side constants and stored ids, never from model text.
+   * Rows without a project drop any detail that is not marked trusted.
+   */
+  detailTrusted?: boolean
 }
 
 export interface AuditRow {
@@ -60,20 +66,37 @@ function rowHash(prevHash: string, row: Omit<AuditRow, 'hash' | 'prev_hash'>): s
   return sha256(prevHash + canonicalJson(row))
 }
 
-/** Argument names only: what is stored when an entry cannot be tied to a project the actor can see. */
-function argKeys(args: unknown): unknown {
-  if (args === undefined) return undefined
-  if (args && typeof args === 'object' && !Array.isArray(args)) return { _keys: Object.keys(args).sort() }
-  return { _type: Array.isArray(args) ? 'array' : typeof args }
+/**
+ * Rows without a project keep only server-defined identifiers: known tool names, known argument
+ * names and a count of everything else. Model-chosen names could carry project content.
+ */
+function redactProjectless(e: AuditInput): AuditInput {
+  let args: unknown
+  if (e.args !== undefined) {
+    if (e.args && typeof e.args === 'object' && !Array.isArray(e.args)) {
+      const keys = Object.keys(e.args)
+      const known = keys.filter(isKnownField).sort()
+      args = { _keys: known, _unknownKeys: keys.length - known.length }
+    } else {
+      args = { _type: Array.isArray(e.args) ? 'array' : e.args === null ? 'null' : typeof e.args }
+    }
+  }
+  return {
+    ...e,
+    tool: e.tool == null ? null : isKnownTool(e.tool) ? e.tool : '(unknown)',
+    args,
+    reason: null,
+    detail: e.detailTrusted ? e.detail : null,
+  }
 }
 
 /**
  * Append one audit row. Each row hashes the previous one, so silent edits break the chain.
- * Entries without a project keep argument names and no free text (args values, reason): access to them
+ * Entries without a project carry no free text (see redactProjectless): access to them
  * cannot be revoked per project, so they must not carry project content.
  */
 export function appendAudit(db: Db, clock: Clock, e: AuditInput): number {
-  if (!e.projectId) e = { ...e, args: argKeys(e.args), reason: null }
+  if (!e.projectId) e = redactProjectless(e)
   return tx(db, () => {
     const last = get<{ seq: number; hash: string }>(db, 'SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1')
     const row: Omit<AuditRow, 'hash' | 'prev_hash'> = {
