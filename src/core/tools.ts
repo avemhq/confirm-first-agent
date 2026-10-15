@@ -6,7 +6,7 @@ import type { Ctx } from './context'
 import { all, get, type Row } from './db'
 import { isKnownField } from './names'
 import { createProposal, MAX_OPEN_PROPOSALS, toView, type ProposalTool, type ProposalView } from './proposals'
-import { detectInjection, escapeTags as esc, isSafeLine, isSafeText, visible, wrapUntrusted } from './untrusted'
+import { detectInjection, escapeTags as esc, isSafeLine, isSafeText, wrapUntrusted } from './untrusted'
 
 // ---------------------------------------------------------------------------
 // Shared field schemas. The actor is NEVER a field: it comes from the session.
@@ -365,7 +365,7 @@ export const TOOLS = [
       assertCan(ctx.db, ctx.actorId, t.project_id, 'propose_update_task_status')
       if (t.status === input.status) throw new ToolError('no_change', `${t.id} is already ${t.status}`)
       return propose(ctx, ui, {
-        tool: 'propose_update_task_status', projectId: t.project_id, title: `${t.id} "${visible(t.title)}": ${t.status} → ${input.status}`,
+        tool: 'propose_update_task_status', projectId: t.project_id, title: `${t.id} "${t.title}": ${t.status} → ${input.status}`,
         args: { taskId: t.id, status: input.status }, targetId: t.id, baseVersion: t.version,
         before: { status: t.status }, after: { status: input.status }, reason: input.reason,
       })
@@ -386,7 +386,7 @@ export const TOOLS = [
       assertCan(ctx.db, ctx.actorId, t.project_id, 'propose_assign_task', { assigneeId: input.assigneeId })
       if (t.assignee_id === input.assigneeId) throw new ToolError('no_change', `${t.id} is already assigned to ${input.assigneeId}`)
       return propose(ctx, ui, {
-        tool: 'propose_assign_task', projectId: t.project_id, title: `${t.id} "${visible(t.title)}": assign to ${input.assigneeId}`,
+        tool: 'propose_assign_task', projectId: t.project_id, title: `${t.id} "${t.title}": assign to ${input.assigneeId}`,
         args: { taskId: t.id, assigneeId: input.assigneeId }, targetId: t.id, baseVersion: t.version,
         before: { assigneeId: t.assignee_id }, after: { assigneeId: input.assigneeId }, reason: input.reason,
       })

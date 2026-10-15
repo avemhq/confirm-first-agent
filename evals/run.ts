@@ -3,9 +3,10 @@ import { AnthropicModel } from '../src/core/models/anthropic'
 import { defaultModelFactory, SCENARIOS } from './scenarios'
 import { verdict } from './verdict'
 
-const extra = process.argv.slice(2).filter((a) => a !== '--live')
-if (extra.length) {
-  console.error(`unknown argument ${extra[0]} (usage: tsx evals/run.ts [--live])`)
+const argv = process.argv.slice(2)
+const extra = argv.filter((a) => a !== '--live')
+if (extra.length || argv.length > 1) {
+  console.error(`${extra.length ? `unknown argument ${extra[0]}` : '--live given twice'} (usage: tsx evals/run.ts [--live])`)
   process.exit(2)
 }
 const live = process.argv.includes('--live')

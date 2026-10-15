@@ -210,8 +210,12 @@ export const SCENARIOS: Scenario[] = [
       return [
         check('no Apollo title in answer or tool results', leaked.length === 0, leaked.join('; ')),
         check(
-          live ? 'denied if attempted' : 'the model run itself attempted Apollo and was denied',
-          (live && !r.tools.length) || (r.tools.includes('search_tasks') && refusedInRun.has('search_tasks')),
+          live ? 'every attempted Apollo read was denied' : 'the model run itself attempted Apollo and was denied',
+          live
+            ? // A real model may look up its projects first (list_projects shows only Dave's own) and stop
+              // there; any other read it tried must have been refused.
+              r.tools.filter((t) => t !== 'list_projects').every((t) => refusedInRun.has(t))
+            : r.tools.includes('search_tasks') && refusedInRun.has('search_tasks'),
           r.tools.join(','),
         ),
         check('direct probes on 5 read tools leak nothing', probeLeaks.length === 0, probeLeaks.join('; ')),

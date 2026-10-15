@@ -137,20 +137,26 @@ export interface NewProposal {
   reason: string
 }
 
+/** Fields that may hold several lines (descriptions, report bodies). Everything else is one line. */
+const MULTILINE_FIELDS = new Set(['description', 'body'])
+
 /** Every string a human reads before confirming, with control and bidi characters made visible. */
-function visibleDeep<T>(v: T): T {
-  if (typeof v === 'string') return visible(v) as T
-  if (Array.isArray(v)) return v.map(visibleDeep) as T
-  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [visible(k), visibleDeep(x)])) as T
+function visibleDeep<T>(v: T, multiline: boolean, key = ''): T {
+  if (typeof v === 'string') return visible(v, multiline && MULTILINE_FIELDS.has(key)) as T
+  if (Array.isArray(v)) return v.map((x) => visibleDeep(x, multiline, key)) as T
+  if (v && typeof v === 'object') {
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [visible(k), visibleDeep(x, multiline, k)])) as T
+  }
   return v
 }
 
 /**
- * The view for the confirmation screens (web card, terminal). Stored text is escaped on the way out,
- * not only checked on the way in: rows written before the input check, or task titles copied into a
- * proposal from the database, cannot reach a human with hidden or reordered characters.
+ * The view for the confirmation screens (web card, terminal). This is the one place where stored text
+ * is escaped for display (not only checked on the way in): rows written before the input check, or
+ * task titles copied into a proposal from the database, cannot reach a human with hidden or reordered
+ * characters. The terminal asks for `multiline: false`, so no field can start a fake line there.
  */
-export function toView(p: ProposalRow, token?: string): ProposalView {
+export function toView(p: ProposalRow, token?: string, { multiline = true }: { multiline?: boolean } = {}): ProposalView {
   return {
     id: p.id,
     tool: p.tool,
@@ -158,8 +164,8 @@ export function toView(p: ProposalRow, token?: string): ProposalView {
     projectId: p.project_id,
     actorId: p.actor_id,
     channel: p.channel,
-    before: p.before_json ? visibleDeep(JSON.parse(p.before_json) as Record<string, unknown>) : null,
-    after: visibleDeep(JSON.parse(p.after_json) as Record<string, unknown>),
+    before: p.before_json ? visibleDeep(JSON.parse(p.before_json) as Record<string, unknown>, multiline) : null,
+    after: visibleDeep(JSON.parse(p.after_json) as Record<string, unknown>, multiline),
     reason: visible(p.reason),
     status: p.status,
     expiresAt: p.expires_at,

@@ -53,7 +53,6 @@ const ranges: [number, number][] = [
 const hex = (n: number) => `\\u${n.toString(16).padStart(4, '0')}`
 const CLASS = `[${ranges.map(([a, b]) => (a === b ? hex(a) : `${hex(a)}-${hex(b)}`)).join('')}]`
 const UNSAFE = new RegExp(CLASS)
-const UNSAFE_ALL = new RegExp(CLASS, 'g')
 
 /** One-line fields (titles, reasons): no control or bidi characters at all. */
 export const isSafeLine = (s: string): boolean => !UNSAFE.test(s)
@@ -61,6 +60,15 @@ export const isSafeLine = (s: string): boolean => !UNSAFE.test(s)
 /** Multi-line fields (descriptions, report bodies): newline and tab are fine, nothing else. */
 export const isSafeText = (s: string): boolean => !UNSAFE.test(s.replace(/[\n\t]/g, ''))
 
-/** For terminal output: every control or bidi character becomes a visible \u{..} escape. */
-export const visible = (s: string): string =>
-  s.replace(UNSAFE_ALL, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`)
+const UNSAFE_OR_BACKSLASH = new RegExp(`\\\\|${CLASS}`, 'g')
+
+/**
+ * For confirmation screens: every control or bidi character becomes a visible \u{..} escape, and a
+ * literal backslash becomes \\, so the display is unambiguous: a real line break and the six typed
+ * characters \u{a} never look the same. `multiline` keeps newline and tab as they are (for
+ * descriptions and report bodies shown as text). Apply once, at the display boundary.
+ */
+export const visible = (s: string, multiline = false): string =>
+  s.replace(UNSAFE_OR_BACKSLASH, (c) =>
+    c === '\\' ? '\\\\' : multiline && (c === '\n' || c === '\t') ? c : `\\u{${c.codePointAt(0)!.toString(16)}}`,
+  )

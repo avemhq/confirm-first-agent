@@ -13,7 +13,6 @@ import { fromInvocation } from '../scripts/load-env'
 import { createInterface } from 'node:readline/promises'
 import { confirm, getProposal, reject, toView, tokenFor } from '../src/core/proposals'
 import { getCore } from '../src/core/runtime'
-import { visible } from '../src/core/untrusted'
 import { parseArgsOrExit } from './args'
 
 const USAGE = 'npm run confirm -- <proposal-id> --user <id> [--db path]'
@@ -36,12 +35,13 @@ if (!row) {
   console.error('Proposal not found.')
   process.exit(4)
 }
-const v = toView(row)
-// Stored text is escaped for the terminal: control and bidi characters are shown, never interpreted.
-const s = (x: unknown) => visible(String(x))
-console.log(`\n${s(v.id)}  ${s(v.title)}\nrequested by ${s(v.actorId)} via ${v.channel}, status ${v.status}, expires ${v.expiresAt}\nreason: ${s(v.reason)}\n`)
+// toView escapes stored text once (control and bidi characters shown as \u{..}, backslashes doubled);
+// multiline: false also escapes newlines, so no value can start a fake line in the terminal.
+const v = toView(row, undefined, { multiline: false })
+const show = (x: unknown) => (x === undefined || x === null ? '-' : typeof x === 'string' ? `"${x}"` : String(x))
+console.log(`\n${v.id}  ${v.title}\nrequested by ${v.actorId} via ${v.channel}, status ${v.status}, expires ${v.expiresAt}\nreason: ${v.reason}\n`)
 for (const k of new Set([...Object.keys(v.before ?? {}), ...Object.keys(v.after)])) {
-  console.log(`  ${s(k).padEnd(12)} ${s(JSON.stringify(v.before?.[k] ?? null))}  ->  ${s(JSON.stringify(v.after[k] ?? null))}`)
+  console.log(`  ${k.padEnd(12)} ${show(v.before?.[k])}  ->  ${show(v.after[k])}`)
 }
 
 const rl = createInterface({ input: process.stdin, output: process.stdout })
