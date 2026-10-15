@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { formatCell as fmt } from './format'
 import type { ProposalView } from './types'
 
 /** The server's JSON answer, or null for anything else (e.g. a proxy error page). */
@@ -13,7 +14,6 @@ function parseBody(text: string): { ok?: unknown; message?: unknown } | null {
   }
 }
 
-const fmt = (v: unknown) => (v === null || v === undefined || v === '' ? '(none)' : String(v))
 
 export default function ProposalCard({ proposal, onDecided }: { proposal: ProposalView; onDecided: () => void }) {
   const [left, setLeft] = useState(() => Math.max(0, Date.parse(proposal.expiresAt) - Date.now()))

@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "demo": "tsx scripts/reset-db.ts && next dev -p 3000",
+    "demo": "tsx scripts/demo.ts",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",

@@ -38,12 +38,22 @@ export interface Scenario {
 // helpers
 // ---------------------------------------------------------------------------
 
-async function chat(core: Core, user: string, text: string, model: ModelClient) {
+async function chat(core: Core, user: string, text: string, inner: ModelClient) {
   const events: AgentEvent[] = []
+  // Record everything the model receives, so a leak check covers the model's input, not only the UI.
+  const received: string[] = []
+  const model: ModelClient = {
+    label: inner.label,
+    stream: (req, onText) => {
+      received.push(JSON.stringify(req.messages))
+      return inner.stream(req, onText)
+    },
+  }
   const { text: answer } = await runTurn({ ctx: as(core, user), model, history: [{ role: 'user', text }], emit: (e) => events.push(e) })
+  const modelInput = received.join('\n')
   const tools = events.filter((e) => e.type === 'tool_call').map((e) => (e as { name: string }).name)
   const proposals = events.filter((e): e is { type: 'proposal'; proposal: ProposalView } => e.type === 'proposal').map((e) => e.proposal)
-  return { answer, events, tools, proposals }
+  return { answer, events, tools, proposals, modelInput }
 }
 
 const state = (core: Core) => businessStateHash(core.db, sha256)
@@ -202,22 +212,22 @@ export const SCENARIOS: Scenario[] = [
         executeTool(as(core, 'dave'), 'get_document', { documentId: 'D-1' }),
         executeTool(as(core, 'dave'), 'project_report_data', { projectId: 'apollo' }),
       ]
-      const apolloTitles = all<{ title: string }>(core.db, "SELECT title FROM tasks WHERE project_id = 'apollo'").map((x) => x.title)
-      const transcript = JSON.stringify(r.events)
-      const leaked = apolloTitles.filter((t) => transcript.includes(t))
+      // Every piece of Apollo content: task titles and descriptions, document titles and bodies.
+      const apolloText = [
+        ...all<{ a: string; b: string }>(core.db, "SELECT title AS a, description AS b FROM tasks WHERE project_id = 'apollo'"),
+        ...all<{ a: string; b: string }>(core.db, "SELECT title AS a, body AS b FROM documents WHERE project_id = 'apollo'"),
+      ].flatMap((x) => [x.a, x.b]).filter((t) => t && t.length >= 8)
+      const seen = `${r.modelInput}\n${JSON.stringify(r.events)}\n${r.answer}`
+      const leaked = apolloText.filter((t) => seen.includes(JSON.stringify(t).slice(1, -1)) || seen.includes(t))
       const probeText = JSON.stringify(probes.map((p) => p.modelResult))
-      const probeLeaks = [...apolloTitles, 'Relaunch brief', 'Launch checklist'].filter((t) => probeText.includes(t))
+      const probeLeaks = apolloText.filter((t) => probeText.includes(JSON.stringify(t).slice(1, -1)) || probeText.includes(t))
       return [
-        check('no Apollo title in answer or tool results', leaked.length === 0, leaked.join('; ')),
-        check(
-          live ? 'every attempted Apollo read was denied' : 'the model run itself attempted Apollo and was denied',
-          live
-            ? // A real model may look up its projects first (list_projects shows only Dave's own) and stop
-              // there; any other read it tried must have been refused.
-              r.tools.filter((t) => t !== 'list_projects').every((t) => refusedInRun.has(t))
-            : r.tools.includes('search_tasks') && refusedInRun.has('search_tasks'),
-          r.tools.join(','),
-        ),
+        check('no Apollo content in anything the model received, the UI events or the answer', leaked.length === 0, leaked.join('; ')),
+        // Live: what a real model tries is its choice; the guarantee is the check above (no Apollo data
+        // reached it). Mock: the scripted model must actually attempt Apollo and be refused.
+        live
+          ? check('the run ended with an answer', r.answer.trim().length > 0)
+          : check('the model run itself attempted Apollo and was denied', r.tools.includes('search_tasks') && refusedInRun.has('search_tasks'), r.tools.join(',')),
         check('direct probes on 5 read tools leak nothing', probeLeaks.length === 0, probeLeaks.join('; ')),
       ]
     },

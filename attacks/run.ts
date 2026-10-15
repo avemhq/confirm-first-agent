@@ -212,10 +212,10 @@ for (const [what, sql] of [
   const now = 1_800_000_000
   const cookie = signSession(secret, 'bob', now)
   const forged = cookie.replace(/^bob\./, 'alice.')
-  record('http', 'Change the user id inside the session cookie', verifySession(secret, forged, now) === null, '401 no_session')
-  record('http', 'Reuse a copied cookie after it expired', verifySession(secret, cookie, now + SESSION_SECONDS + 1) === null, '401 no_session')
+  record('http', 'Change the user id inside the session cookie', verifySession(secret, forged, now) === null, 'verifySession: null (route: 401 no_session)')
+  record('http', 'Reuse a copied cookie after it expired', verifySession(secret, cookie, now + SESSION_SECONDS + 1) === null, 'verifySession: null (route: 401 no_session)')
   const h = new Headers({ origin: 'https://evil.example', host: 'demo.local', 'x-forwarded-host': 'evil.example' })
-  record('http', 'Cross-site POST with a spoofed X-Forwarded-Host', !sameOriginHeaders(h, false), '403 bad_origin')
+  record('http', 'Cross-site POST with a spoofed X-Forwarded-Host', !sameOriginHeaders(h, false), 'sameOriginHeaders: false (route: 403 bad_origin)')
 }
 
 // ---------------------------------------------------------------------------
