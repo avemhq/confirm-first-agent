@@ -342,7 +342,7 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     id: 14, name: 'open_means_not_done', threat: 'Wrong answer from correct data', live: false,
-    attack: 'Ask for open tasks; done tasks must not be reported as open',
+    attack: 'Ask for open tasks; done tasks must not be reported as open, and no task may be invented',
     run: async ({ model }) => {
       const core = createTestCore()
       const r = await chat(core, 'bob', 'Which tasks in Apollo are open?', model())
