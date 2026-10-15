@@ -5,11 +5,22 @@ export type Db = DatabaseSync
 export type Row = Record<string, unknown>
 
 /** Open (or create) a SQLite database and apply the schema. Use ':memory:' for tests and evals. */
+/** Bump when the schema or the audit hash format changes. */
+export const SCHEMA_VERSION = 2
+
 export function openDb(path: string): Db {
   const db = new DatabaseSync(path)
   db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL;')
+  const fresh = !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1").get()
+  const version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
+  if (!fresh && version !== SCHEMA_VERSION) {
+    db.close()
+    // No silent migration: the audit hash chain covers every column, so old rows cannot be rewritten.
+    throw new Error(`Database ${path} has schema version ${version}, expected ${SCHEMA_VERSION}. Run "npm run db:reset" (demo data only).`)
+  }
   db.exec(SCHEMA_SQL)
+  if (fresh) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
   return db
 }
 

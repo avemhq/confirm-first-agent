@@ -134,8 +134,12 @@ export function tokenFor(core: Core, p: ProposalRow): string {
   })
 }
 
-/** Store a pending change. Nothing in the business tables is touched here. */
-export function createProposal(ctx: Ctx, np: NewProposal): { row: ProposalRow; token: string } {
+/**
+ * Store a pending change. Nothing in the business tables is touched here.
+ * Returns null when the user already has MAX_OPEN_PROPOSALS open proposals; the count and the insert
+ * share one write transaction, so concurrent callers cannot overshoot the cap.
+ */
+export function createProposal(ctx: Ctx, np: NewProposal): { row: ProposalRow; token: string } | null {
   const now = ctx.clock.now()
   const argsJson = canonicalJson(np.args)
   const row: ProposalRow = {
@@ -159,7 +163,8 @@ export function createProposal(ctx: Ctx, np: NewProposal): { row: ProposalRow; t
     decided_at: null,
     result_json: null,
   }
-  tx(ctx.db, () => {
+  const ok = tx(ctx.db, () => {
+    if (countOpen(ctx, ctx.actorId) >= MAX_OPEN_PROPOSALS) return false
     run(
       ctx.db,
       `INSERT INTO proposals (id, actor_id, channel, project_id, tool, title, args_json, args_hash, target_id, base_version,
@@ -171,22 +176,22 @@ export function createProposal(ctx: Ctx, np: NewProposal): { row: ProposalRow; t
       actorId: ctx.actorId, channel: ctx.channel, projectId: np.projectId, event: 'proposed', outcome: 'pending',
       tool: np.tool, args: np.args, reason: np.reason, proposalId: row.id,
     })
+    return true
   })
-  return { row, token: tokenFor(ctx, row) }
+  return ok ? { row, token: tokenFor(ctx, row) } : null
 }
 
 export function getProposal(db: Db, id: string): ProposalRow | undefined {
   return get<ProposalRow>(db, 'SELECT * FROM proposals WHERE id = ?', id)
 }
 
+/** Open proposals that still count: pending, unexpired and still authorized (so revoked ones never block). */
 export function countOpen(core: Core, userId: string): number {
-  return (
-    get<{ n: number }>(
-      core.db,
-      "SELECT COUNT(*) AS n FROM proposals WHERE actor_id = ? AND status = 'pending' AND expires_at > ?",
-      userId, core.clock.now().toISOString(),
-    )?.n ?? 0
-  )
+  return all<ProposalRow>(
+    core.db,
+    "SELECT * FROM proposals WHERE actor_id = ? AND status = 'pending' AND expires_at > ?",
+    userId, core.clock.now().toISOString(),
+  ).filter((p) => authorize(core, p) === null).length
 }
 
 /** Re-check everything the proposal needs at decision time: role, assignment rule, assignee membership. */
@@ -300,6 +305,12 @@ function checkToken(core: Core, input: DecisionInput, verb: 'confirm' | 'reject'
   return { ok: true, p, payload: v.payload }
 }
 
+/** Ids must stay inside the read schemas (T-/D- plus at most 9 digits). */
+function nextId(prefix: 'T' | 'D', max: number): string {
+  if (max + 1 > 999_999_999) throw new Error(`${prefix} id space exhausted`)
+  return `${prefix}-${max + 1}`
+}
+
 /** The ONLY code path that writes to the business tables. Called only from confirm(). */
 function applyProposal(core: Core, p: ProposalRow): Record<string, unknown> {
   const args = JSON.parse(p.args_json) as Record<string, string | undefined>
@@ -326,7 +337,7 @@ function applyProposal(core: Core, p: ProposalRow): Record<string, unknown> {
     }
     case 'propose_create_task': {
       const max = get<{ m: number | null }>(core.db, 'SELECT MAX(CAST(substr(id, 3) AS INTEGER)) AS m FROM tasks')
-      const id = `T-${(max?.m ?? 0) + 1}`
+      const id = nextId('T', max?.m ?? 0)
       run(
         core.db,
         `INSERT INTO tasks (id, project_id, title, description, status, assignee_id, due_date, version, updated_at)
@@ -337,7 +348,7 @@ function applyProposal(core: Core, p: ProposalRow): Record<string, unknown> {
     }
     case 'propose_save_report': {
       const max = get<{ m: number | null }>(core.db, 'SELECT MAX(CAST(substr(id, 3) AS INTEGER)) AS m FROM documents')
-      const id = `D-${(max?.m ?? 0) + 1}`
+      const id = nextId('D', max?.m ?? 0)
       run(
         core.db,
         "INSERT INTO documents (id, project_id, kind, title, body, created_by, created_at) VALUES (?,?,'report',?,?,?,?)",

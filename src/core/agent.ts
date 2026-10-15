@@ -1,7 +1,7 @@
 import { appendAudit } from './audit'
 import type { Ctx } from './context'
 import type { AgentEvent, Block, ModelClient, Msg } from './models/types'
-import { executeTool, PROPOSAL_TOOLS, toolDefsForModel } from './tools'
+import { auditProject, executeTool, PROPOSAL_TOOLS, toolDefsForModel } from './tools'
 
 export const MAX_STEPS = 6
 export const MAX_PROPOSALS_PER_TURN = 3
@@ -73,6 +73,7 @@ export async function runTurn({ ctx, model, history, emit, signal }: RunTurnInpu
       if (PROPOSAL_TOOLS.has(block.name) && proposals >= MAX_PROPOSALS_PER_TURN) {
         appendAudit(ctx.db, ctx.clock, {
           actorId: ctx.actorId, channel: ctx.channel, event: 'limit', outcome: 'refused', tool: block.name, args: block.input ?? null,
+          projectId: block.input && typeof block.input === 'object' ? auditProject(ctx, block.input as Record<string, unknown>) : null,
           detail: `more than ${MAX_PROPOSALS_PER_TURN} proposals in one turn`,
         })
         outcome = { modelResult: { error: 'limit', message: `At most ${MAX_PROPOSALS_PER_TURN} proposals per turn.` }, ui: [], isError: true }

@@ -28,8 +28,8 @@ export function loadSecret(): Buffer {
   if (!existsSync(file)) {
     mkdirSync(dirname(file), { recursive: true })
     const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
-    writeFileSync(tmp, randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' })
     try {
+      writeFileSync(tmp, randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' })
       linkSync(tmp, file) // atomic publish; throws EEXIST if another process was first
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e

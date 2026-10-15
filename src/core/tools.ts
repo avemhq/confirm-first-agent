@@ -4,7 +4,7 @@ import { assertCan, AuthzError, isMember, scopedProjectIds, type Role } from './
 import { isoDate } from './clock'
 import type { Ctx } from './context'
 import { all, get, type Row } from './db'
-import { countOpen, createProposal, MAX_OPEN_PROPOSALS, toView, type ProposalTool, type ProposalView } from './proposals'
+import { createProposal, MAX_OPEN_PROPOSALS, toView, type ProposalTool, type ProposalView } from './proposals'
 import { detectInjection, escapeTags as esc, wrapUntrusted } from './untrusted'
 
 // ---------------------------------------------------------------------------
@@ -95,14 +95,15 @@ const today = (ctx: Ctx) => isoDate(ctx.clock.now())
 
 /** A window of the body around the first match, so the hit is visible in the snippet. */
 function snippet(body: string, query: string, width = 160): string {
-  const i = body.toLowerCase().indexOf(query.toLowerCase())
+  // Search the original string (not a lower-cased copy, whose indices can shift for some Unicode letters).
+  const i = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').exec(body)?.index ?? -1
   const start = i < 0 ? 0 : Math.max(0, Math.min(i - 40, body.length - width))
   const s = body.slice(start, start + width)
   return (start > 0 ? '...' : '') + s + (start + width < body.length ? '...' : '')
 }
 
 /** Project an audit entry belongs to, if the actor can see it (so revoked access also hides the entry). */
-function auditProject(ctx: Ctx, input: Record<string, unknown>): string | null {
+export function auditProject(ctx: Ctx, input: Record<string, unknown>): string | null {
   let pid: string | undefined
   if (typeof input.projectId === 'string') pid = input.projectId
   else if (typeof input.taskId === 'string') pid = get<{ project_id: string }>(ctx.db, 'SELECT project_id FROM tasks WHERE id = ?', input.taskId)?.project_id
@@ -111,10 +112,11 @@ function auditProject(ctx: Ctx, input: Record<string, unknown>): string | null {
 }
 
 function propose(ctx: Ctx, ui: UiEvent[], np: Parameters<typeof createProposal>[1]) {
-  if (countOpen(ctx, ctx.actorId) >= MAX_OPEN_PROPOSALS) {
+  const created = createProposal(ctx, np)
+  if (!created) {
     throw new ToolError('too_many_pending', `You already have ${MAX_OPEN_PROPOSALS} open proposals. Ask the user to confirm or reject them first.`)
   }
-  const { row, token } = createProposal(ctx, np)
+  const { row, token } = created
   ui.push({ type: 'proposal', proposal: toView(row, token) })
   return {
     proposalId: row.id,

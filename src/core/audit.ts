@@ -60,8 +60,20 @@ function rowHash(prevHash: string, row: Omit<AuditRow, 'hash' | 'prev_hash'>): s
   return sha256(prevHash + canonicalJson(row))
 }
 
-/** Append one audit row. Each row hashes the previous one, so silent edits break the chain. */
+/** Argument names only: what is stored when an entry cannot be tied to a project the actor can see. */
+function argKeys(args: unknown): unknown {
+  if (args === undefined) return undefined
+  if (args && typeof args === 'object' && !Array.isArray(args)) return { _keys: Object.keys(args).sort() }
+  return { _type: Array.isArray(args) ? 'array' : typeof args }
+}
+
+/**
+ * Append one audit row. Each row hashes the previous one, so silent edits break the chain.
+ * Entries without a project keep argument names and no free text (args values, reason): access to them
+ * cannot be revoked per project, so they must not carry project content.
+ */
 export function appendAudit(db: Db, clock: Clock, e: AuditInput): number {
+  if (!e.projectId) e = { ...e, args: argKeys(e.args), reason: null }
   return tx(db, () => {
     const last = get<{ seq: number; hash: string }>(db, 'SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1')
     const row: Omit<AuditRow, 'hash' | 'prev_hash'> = {
@@ -97,8 +109,8 @@ export function listAudit(db: Db, opts: { limit?: number } = {}): AuditRow[] {
 }
 
 /**
- * Audit entries one user may see: their own actions, and only for projects they can still access
- * (entries without a project are about the user's own requests and carry no project data).
+ * Audit entries one user may see: their own actions, and only for projects they can still access.
+ * Entries without a project carry no free text (see appendAudit), so showing them leaks nothing.
  */
 export function listAuditForUser(db: Db, userId: string, scope: string[], limit = 60): { rows: AuditRow[]; total: number } {
   const inScope = scope.length ? `OR project_id IN (${scope.map(() => '?').join(',')})` : ''

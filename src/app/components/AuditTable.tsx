@@ -26,7 +26,11 @@ export default function AuditTable({ rows, total }: { rows: AuditRow[]; total: n
             </div>
             {r.reason && <div className="small">Why: {r.reason}</div>}
             {r.detail && <div className="small muted">{r.detail}</div>}
-            {!r.reason && !r.detail && r.args_json && <div className="small muted mono">{r.args_json.slice(0, 120)}</div>}
+            {!r.reason && !r.detail && r.args_json && (
+              <div className="small muted mono" title={r.args_json}>
+                {r.args_json.length > 120 ? `${r.args_json.slice(0, 117)}...` : r.args_json}
+              </div>
+            )}
             <div className="small muted">
               by {r.actor_id} via {r.channel}
               {r.confirmed_by && <span className="ok-text"> · confirmed by {r.confirmed_by}</span>}

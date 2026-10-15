@@ -104,3 +104,51 @@ describe('untrusted text handling', () => {
     expect(out.truncated).toMatch(/Showing 2 of/)
   })
 })
+
+describe('round 2 regressions', () => {
+  it('audit entries without a project keep argument names only', () => {
+    const core = createTestCore()
+    executeTool(as(core, 'bob'), 'no_such_tool', { body: 'Apollo internals' })
+    executeTool(as(core, 'bob'), 'propose_save_report', { projectId: 'apollo', title: 'x', body: 'Apollo internals but too short?', reason: 'r' })
+    const { rows } = listAuditForUser(core.db, 'bob', [])
+    expect(rows.length).toBeGreaterThan(0)
+    expect(JSON.stringify(rows)).not.toContain('Apollo internals')
+  })
+
+  it('proposals that are no longer authorized do not block the cap', async () => {
+    const { countOpen } = await import('@/core/proposals')
+    const core = createTestCore()
+    for (let i = 0; i < MAX_OPEN_PROPOSALS; i++) {
+      executeTool(as(core, 'bob'), 'propose_create_task', { projectId: 'apollo', title: `Task ${i}`, reason: 'Filling the queue.' })
+    }
+    expect(countOpen(core, 'bob')).toBe(MAX_OPEN_PROPOSALS)
+    run(core.db, "DELETE FROM memberships WHERE user_id = 'bob' AND project_id = 'apollo'")
+    expect(countOpen(core, 'bob')).toBe(0)
+  })
+
+  it('finds the match in the snippet even after case-expanding Unicode', () => {
+    const core = createTestCore()
+    run(core.db, "UPDATE documents SET body = ? WHERE id = 'D-1'", 'İ'.repeat(300) + ' NEEDLE here')
+    const out = executeTool(as(core, 'bob'), 'search_documents', { query: 'needle' }).modelResult as { documents: { snippet: string }[] }
+    expect(out.documents[0]?.snippet).toContain('NEEDLE')
+  })
+
+  it('refuses a database with an older schema version instead of corrupting it', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { DatabaseSync } = await import('node:sqlite')
+    const { openDb } = await import('@/core/db')
+    const dir = mkdtempSync(join(tmpdir(), 'cfa-schema-'))
+    try {
+      const old = new DatabaseSync(join(dir, 'old.db'))
+      old.exec('CREATE TABLE audit_log (seq INTEGER PRIMARY KEY)')
+      old.close()
+      expect(() => openDb(join(dir, 'old.db'))).toThrow(/db:reset/)
+      expect(() => openDb(join(dir, 'new.db')).close()).not.toThrow()
+      expect(() => openDb(join(dir, 'new.db')).close()).not.toThrow()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
