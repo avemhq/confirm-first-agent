@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { systemClock } from './clock'
@@ -12,7 +12,12 @@ import { seed } from './seed'
 // Runtime path, not a bundled asset: tell Turbopack not to trace it.
 export const dbPath = () => resolve(/*turbopackIgnore: true*/ process.env.DB_PATH ?? '.data/demo.db')
 
-/** CONFIRM_SECRET from the environment, else a random secret persisted to .data/confirm.secret (0600). */
+/**
+ * CONFIRM_SECRET from the environment, else a random secret persisted to .data/confirm.secret (0600).
+ * First-start races (web, MCP and CLI starting together) are safe: the secret is written to a unique
+ * temp file and published with link(), which fails if another process won; everyone then reads the
+ * winner's complete file. A secret shorter than 32 bytes is never used.
+ */
 export function loadSecret(): Buffer {
   const fromEnv = process.env.CONFIRM_SECRET
   if (fromEnv) {
@@ -22,10 +27,19 @@ export function loadSecret(): Buffer {
   const file = resolve(/*turbopackIgnore: true*/ dirname(dbPath()), 'confirm.secret')
   if (!existsSync(file)) {
     mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, randomBytes(32).toString('hex'), { mode: 0o600 })
-    chmodSync(file, 0o600)
+    const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
+    writeFileSync(tmp, randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' })
+    try {
+      linkSync(tmp, file) // atomic publish; throws EEXIST if another process was first
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+    } finally {
+      rmSync(tmp, { force: true })
+    }
   }
-  return Buffer.from(readFileSync(file, 'utf8').trim())
+  const secret = Buffer.from(readFileSync(file, 'utf8').trim())
+  if (secret.length < 32) throw new Error(`${file} is shorter than 32 bytes; delete it to regenerate`)
+  return secret
 }
 
 let core: Core | undefined

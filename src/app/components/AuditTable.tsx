@@ -7,11 +7,14 @@ const TONE: Record<string, string> = {
 }
 
 /** Audit entries of the signed-in user, newest first. */
-export default function AuditTable({ rows }: { rows: AuditRow[] }) {
+export default function AuditTable({ rows, total }: { rows: AuditRow[]; total: number }) {
   if (!rows.length) return <p className="muted">No entries yet. Ask the agent something.</p>
   return (
     <div className="audit-wrap">
-      <p className="muted small">Your entries, newest first. Each row hashes the previous one (npm run audit:verify).</p>
+      <p className="muted small">
+        Your entries for projects you can access, newest first{total > rows.length ? ` (latest ${rows.length} of ${total})` : ''}. Each row
+        hashes the previous one (npm run audit:verify).
+      </p>
       <ol className="audit">
         {rows.map((r) => (
           <li key={r.seq}>

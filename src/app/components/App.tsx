@@ -117,7 +117,7 @@ export default function App({ initial, hasSession }: { initial: AppState; hasSes
               ))}
             </div>
           ) : (
-            <AuditTable rows={state.audit} />
+            <AuditTable rows={state.audit} total={state.auditTotal} />
           )}
         </section>
       </main>

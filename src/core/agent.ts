@@ -54,6 +54,12 @@ export async function runTurn({ ctx, model, history, emit, signal }: RunTurnInpu
       emit({ type: 'done' })
       return { text: finalText }
     }
+    if (res.stopReason === 'max_tokens') {
+      // Never present a cut-off answer as complete.
+      emit({ type: 'error', message: 'The model response was cut off (output or context limit). The answer above is incomplete.' })
+      emit({ type: 'done' })
+      return { text: finalText }
+    }
     if (res.stopReason !== 'tool_use') {
       emit({ type: 'done' })
       return { text: finalText }
@@ -65,7 +71,11 @@ export async function runTurn({ ctx, model, history, emit, signal }: RunTurnInpu
       emit({ type: 'tool_call', id: block.id, name: block.name, input: block.input })
       let outcome
       if (PROPOSAL_TOOLS.has(block.name) && proposals >= MAX_PROPOSALS_PER_TURN) {
-        outcome = { modelResult: { error: 'limit', message: 'At most 3 proposals per turn.' }, ui: [], isError: true }
+        appendAudit(ctx.db, ctx.clock, {
+          actorId: ctx.actorId, channel: ctx.channel, event: 'limit', outcome: 'refused', tool: block.name, args: block.input ?? null,
+          detail: `more than ${MAX_PROPOSALS_PER_TURN} proposals in one turn`,
+        })
+        outcome = { modelResult: { error: 'limit', message: `At most ${MAX_PROPOSALS_PER_TURN} proposals per turn.` }, ui: [], isError: true }
       } else {
         outcome = executeTool(ctx, block.name, block.input)
         if (PROPOSAL_TOOLS.has(block.name) && !outcome.isError) proposals++

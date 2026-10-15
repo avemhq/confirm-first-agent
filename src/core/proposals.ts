@@ -1,11 +1,13 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { appendAudit, type Channel } from './audit'
-import { assertCan, AuthzError, type Action } from './authz'
+import { assertCan, AuthzError, isMember, type Action } from './authz'
 import { canonicalJson, sha256 } from './canonical'
 import type { Core, Ctx } from './context'
 import { all, get, run, tx, type Db } from './db'
 
 export const PROPOSAL_TTL_SECONDS = 300
+/** Open (pending, unexpired) proposals per user, across all channels. Caps queue flooding by a compromised model. */
+export const MAX_OPEN_PROPOSALS = 10
 
 export type ProposalTool = 'propose_create_task' | 'propose_update_task_status' | 'propose_assign_task' | 'propose_save_report'
 export type ProposalStatus = 'pending' | 'applied' | 'rejected' | 'expired' | 'conflict'
@@ -166,7 +168,7 @@ export function createProposal(ctx: Ctx, np: NewProposal): { row: ProposalRow; t
       row.target_id, row.base_version, row.before_json, row.after_json, row.reason, row.status, row.created_at, row.expires_at,
     )
     appendAudit(ctx.db, ctx.clock, {
-      actorId: ctx.actorId, channel: ctx.channel, event: 'proposed', outcome: 'pending',
+      actorId: ctx.actorId, channel: ctx.channel, projectId: np.projectId, event: 'proposed', outcome: 'pending',
       tool: np.tool, args: np.args, reason: np.reason, proposalId: row.id,
     })
   })
@@ -177,14 +179,48 @@ export function getProposal(db: Db, id: string): ProposalRow | undefined {
   return get<ProposalRow>(db, 'SELECT * FROM proposals WHERE id = ?', id)
 }
 
-/** Pending, unexpired proposals of one user, from any channel (web chat or MCP). */
+export function countOpen(core: Core, userId: string): number {
+  return (
+    get<{ n: number }>(
+      core.db,
+      "SELECT COUNT(*) AS n FROM proposals WHERE actor_id = ? AND status = 'pending' AND expires_at > ?",
+      userId, core.clock.now().toISOString(),
+    )?.n ?? 0
+  )
+}
+
+/** Re-check everything the proposal needs at decision time: role, assignment rule, assignee membership. */
+function authorize(core: Core, p: ProposalRow): AuthzError | null {
+  const args = JSON.parse(p.args_json) as Record<string, string | undefined>
+  try {
+    assertCan(core.db, p.actor_id, p.project_id, ACTION_OF[p.tool], { assigneeId: args.assigneeId })
+    if (args.assigneeId) {
+      // Assigning on create follows the same rule as assigning an existing task.
+      assertCan(core.db, p.actor_id, p.project_id, 'propose_assign_task', { assigneeId: args.assigneeId })
+      if (!isMember(core.db, args.assigneeId, p.project_id)) {
+        return new AuthzError('forbidden', `${args.assigneeId} is no longer a member of ${p.project_id}`)
+      }
+    }
+    return null
+  } catch (e) {
+    if (e instanceof AuthzError) return e
+    throw e
+  }
+}
+
+/**
+ * Pending, unexpired proposals of one user, from any channel (web chat or MCP), and only those the user
+ * is still allowed to make: a revoked membership hides them (and confirm would refuse them anyway).
+ */
 export function listPending(core: Core, userId: string): ProposalView[] {
   const now = core.clock.now().toISOString()
   return all<ProposalRow>(
     core.db,
-    "SELECT * FROM proposals WHERE actor_id = ? AND status = 'pending' AND expires_at > ? ORDER BY created_at",
-    userId, now,
-  ).map((p) => toView(p, tokenFor(core, p)))
+    "SELECT * FROM proposals WHERE actor_id = ? AND status = 'pending' AND expires_at > ? ORDER BY created_at LIMIT ?",
+    userId, now, MAX_OPEN_PROPOSALS,
+  )
+    .filter((p) => authorize(core, p) === null)
+    .map((p) => toView(p, tokenFor(core, p)))
 }
 
 // ---------------------------------------------------------------------------
@@ -226,12 +262,15 @@ function checkToken(core: Core, input: DecisionInput, verb: 'confirm' | 'reject'
   const audit = (event: 'token_invalid' | 'expired', detail: string, outcome = 'refused') =>
     appendAudit(core.db, core.clock, {
       actorId: input.userId, channel: input.channel, event, outcome, proposalId: input.proposalId, detail: `${verb}: ${detail}`,
+      // Only attach the project when the caller is the requester; otherwise it is not theirs to see.
+      projectId: p && p.actor_id === input.userId ? p.project_id : null,
     })
   const fail = (status: number, code: string, message: string): Checked => ({
     ok: false,
     res: { status, body: { ok: false, code, message } },
   })
 
+  const p = getProposal(core.db, input.proposalId)
   const v = verifyToken(core.secret, input.token)
   if (!v.ok) {
     audit('token_invalid', v.reason)
@@ -241,7 +280,6 @@ function checkToken(core: Core, input: DecisionInput, verb: 'confirm' | 'reject'
     audit('token_invalid', 'token belongs to another proposal')
     return fail(401, 'token_invalid', 'Token does not match this proposal.')
   }
-  const p = getProposal(core.db, input.proposalId)
   if (!p) return fail(404, 'not_found', 'Proposal not found.')
   if (v.payload.exp <= Math.floor(core.clock.now().getTime() / 1000)) {
     if (p.status === 'pending') {
@@ -254,7 +292,8 @@ function checkToken(core: Core, input: DecisionInput, verb: 'confirm' | 'reject'
     audit('token_invalid', `user ${input.userId} is not the requester ${p.actor_id}`)
     return fail(403, 'not_requester', 'Only the user who asked for this change can decide on it.')
   }
-  if (v.payload.ah !== p.args_hash || v.payload.bv !== p.base_version) {
+  // The signed hash must match the stored hash AND the arguments that would actually be applied.
+  if (v.payload.ah !== p.args_hash || v.payload.ah !== sha256(p.args_json) || v.payload.bv !== p.base_version) {
     audit('token_invalid', 'arguments changed after the token was issued')
     return fail(401, 'token_invalid', 'Token does not match the proposed arguments.')
   }
@@ -309,21 +348,26 @@ function applyProposal(core: Core, p: ProposalRow): Record<string, unknown> {
   }
 }
 
+function notPending(core: Core, input: DecisionInput, p: ProposalRow, verb: 'confirm' | 'reject'): DecisionResult {
+  appendAudit(core.db, core.clock, {
+    actorId: input.userId, channel: input.channel, projectId: p.project_id, event: 'not_pending', outcome: 'refused',
+    tool: p.tool, proposalId: p.id, detail: `${verb}: proposal is ${p.status}`,
+  })
+  return { status: 409, body: { ok: false, code: p.status, message: `Proposal is ${p.status}.` } }
+}
+
 export function confirm(core: Core, input: DecisionInput): DecisionResult {
   return tx(core.db, () => {
     const c = checkToken(core, input, 'confirm')
     if (!c.ok) return c.res
     const p = c.p
-    const args = JSON.parse(p.args_json) as Record<string, string | undefined>
 
-    // 6. Permissions are checked again: a role may have changed since the proposal was made.
-    try {
-      assertCan(core.db, p.actor_id, p.project_id, ACTION_OF[p.tool], { assigneeId: args.assigneeId })
-    } catch (e) {
-      if (!(e instanceof AuthzError)) throw e
+    // 6. Permissions are checked again: a role or membership may have changed since the proposal was made.
+    const denied = authorize(core, p)
+    if (denied) {
       appendAudit(core.db, core.clock, {
         actorId: input.userId, channel: input.channel, event: 'denied', outcome: 'refused',
-        tool: p.tool, proposalId: p.id, detail: `confirm: ${e.detail}`,
+        tool: p.tool, proposalId: p.id, detail: `confirm: ${denied.detail}`,
       })
       return { status: 403, body: { ok: false, code: 'forbidden', message: 'You no longer have permission for this change.' } }
     }
@@ -331,16 +375,14 @@ export function confirm(core: Core, input: DecisionInput): DecisionResult {
     // 7. Idempotency: a second click returns the stored result instead of applying again.
     if (p.status === 'applied') {
       appendAudit(core.db, core.clock, {
-        actorId: input.userId, channel: input.channel, event: 'confirm_replay', outcome: 'replayed', tool: p.tool, proposalId: p.id,
+        actorId: input.userId, channel: input.channel, projectId: p.project_id, event: 'confirm_replay', outcome: 'replayed', tool: p.tool, proposalId: p.id,
       })
       return {
         status: 200,
         body: { ok: true, code: 'applied', message: 'Already applied.', replay: true, result: JSON.parse(p.result_json ?? 'null') },
       }
     }
-    if (p.status !== 'pending') {
-      return { status: 409, body: { ok: false, code: p.status, message: `Proposal is ${p.status}.` } }
-    }
+    if (p.status !== 'pending') return notPending(core, input, p, 'confirm')
 
     // 8. Optimistic concurrency: the diff the human saw must still be the truth.
     if (p.target_id && p.base_version !== null) {
@@ -350,7 +392,7 @@ export function confirm(core: Core, input: DecisionInput): DecisionResult {
       if (!task || task.version !== p.base_version) {
         run(core.db, "UPDATE proposals SET status = 'conflict', decided_by = ?, decided_at = ? WHERE id = ?", input.userId, core.clock.now().toISOString(), p.id)
         appendAudit(core.db, core.clock, {
-          actorId: input.userId, channel: input.channel, event: 'conflict', outcome: 'refused', tool: p.tool, proposalId: p.id,
+          actorId: input.userId, channel: input.channel, projectId: p.project_id, event: 'conflict', outcome: 'refused', tool: p.tool, proposalId: p.id,
           detail: `task version ${task?.version ?? 'missing'} != base ${p.base_version}`,
         })
         return {
@@ -371,11 +413,11 @@ export function confirm(core: Core, input: DecisionInput): DecisionResult {
     const result = applyProposal(core, p)
     run(core.db, 'UPDATE proposals SET result_json = ? WHERE id = ?', canonicalJson(result), p.id)
     appendAudit(core.db, core.clock, {
-      actorId: input.userId, channel: input.channel, event: 'confirmed', outcome: 'ok', tool: p.tool,
+      actorId: input.userId, channel: input.channel, projectId: p.project_id, event: 'confirmed', outcome: 'ok', tool: p.tool,
       args: JSON.parse(p.args_json), reason: p.reason, proposalId: p.id, confirmedBy: input.userId,
     })
     appendAudit(core.db, core.clock, {
-      actorId: p.actor_id, channel: input.channel, event: 'applied', outcome: 'ok', tool: p.tool,
+      actorId: p.actor_id, channel: input.channel, projectId: p.project_id, event: 'applied', outcome: 'ok', tool: p.tool,
       args: result, reason: p.reason, proposalId: p.id, confirmedBy: input.userId,
     })
     const updated = getProposal(core.db, p.id)!
@@ -392,9 +434,9 @@ export function reject(core: Core, input: DecisionInput): DecisionResult {
       "UPDATE proposals SET status = 'rejected', decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
       input.userId, core.clock.now().toISOString(), c.p.id,
     )
-    if (changed !== 1) return { status: 409, body: { ok: false, code: c.p.status, message: `Proposal is ${c.p.status}.` } }
+    if (changed !== 1) return notPending(core, input, c.p, 'reject')
     appendAudit(core.db, core.clock, {
-      actorId: input.userId, channel: input.channel, event: 'rejected', outcome: 'ok', tool: c.p.tool,
+      actorId: input.userId, channel: input.channel, projectId: c.p.project_id, event: 'rejected', outcome: 'ok', tool: c.p.tool,
       reason: c.p.reason, proposalId: c.p.id, confirmedBy: input.userId,
     })
     return { status: 200, body: { ok: true, code: 'rejected', message: 'Change discarded. Nothing was written.' } }

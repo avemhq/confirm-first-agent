@@ -90,7 +90,7 @@ describe('write path', () => {
         if (statSync(p).isDirectory()) walk(p)
         else if (/\.(ts|tsx)$/.test(f) && !p.endsWith(join('core', 'proposals.ts')) && !p.endsWith(join('core', 'seed.ts'))) {
           const src = readFileSync(p, 'utf8')
-          if (/(UPDATE|INSERT INTO|DELETE FROM)\s+(tasks|documents)\b/i.test(src)) offenders.push(p)
+          if (/(UPDATE|INSERT\s+(OR\s+\w+\s+)?INTO|REPLACE\s+INTO|DELETE\s+FROM)\s+["'`\[]?(main\.)?(tasks|documents)\b/i.test(src)) offenders.push(p)
         }
       }
     }

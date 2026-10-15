@@ -1,4 +1,4 @@
-import { listAudit, verifyChain, type AuditRow } from '@/core/audit'
+import { listAuditForUser, verifyChain, type AuditRow } from '@/core/audit'
 import { scopedProjectIds, type Role } from '@/core/authz'
 import { isoDate } from '@/core/clock'
 import { all } from '@/core/db'
@@ -21,6 +21,7 @@ export interface AppState {
   projects: { id: string; name: string; description: string; role: Role; tasks: BoardTask[]; reports: { id: string; title: string }[] }[]
   pending: ProposalView[]
   audit: AuditRow[]
+  auditTotal: number
   chain: { ok: boolean; rows: number; firstBrokenSeq: number | null }
   model: string
 }
@@ -53,7 +54,7 @@ export function buildState(user: string): AppState {
     users,
     projects,
     pending: listPending(core, user),
-    audit: listAudit(core.db, { actorId: user, limit: 60 }),
+    ...(({ rows, total }) => ({ audit: rows, auditTotal: total }))(listAuditForUser(core.db, user, scope, 60)),
     chain: verifyChain(core.db),
     model: agentMode() === 'anthropic' ? (process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5-5') : process.env.MOCK_ADVERSARIAL === '0' ? 'mock' : 'mock (adversarial)',
   }

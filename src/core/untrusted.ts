@@ -9,6 +9,14 @@ export function wrapUntrusted(source: string, text: string): string {
   return `<untrusted_data source="${safeSource}">${body}</untrusted_data>`
 }
 
+/**
+ * Short stored strings (titles, names) are not wrapped, to keep tool results readable,
+ * but angle brackets are escaped so they cannot open or close a tag in the model context.
+ */
+export function escapeTags(text: string): string {
+  return text.replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
+}
+
 const INJECTION_PATTERNS: RegExp[] = [
   /ignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above)\s+instructions/i,
   /system\s+(note|prompt|message)\s*:/i,

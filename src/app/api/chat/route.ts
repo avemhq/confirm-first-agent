@@ -27,7 +27,15 @@ export async function POST(req: Request) {
   const encoder = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const emit = (e: AgentEvent) => controller.enqueue(encoder.encode(JSON.stringify(e) + '\n'))
+      let open = true
+      const emit = (e: AgentEvent) => {
+        if (!open) return
+        try {
+          controller.enqueue(encoder.encode(JSON.stringify(e) + '\n'))
+        } catch {
+          open = false // client went away; the turn stops via req.signal
+        }
+      }
       try {
         await runTurn({
           ctx: { ...getCore(), actorId: user, channel: 'web' },
@@ -41,7 +49,7 @@ export async function POST(req: Request) {
         emit({ type: 'error', message: 'The model call failed. Check the server log.' })
         emit({ type: 'done' })
       } finally {
-        controller.close()
+        if (open) controller.close()
       }
     },
   })

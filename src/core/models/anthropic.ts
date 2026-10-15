@@ -46,7 +46,13 @@ export class AnthropicModel implements ModelClient {
       return { type: 'opaque', data: b } // e.g. thinking blocks: replayed unchanged
     })
     const stopReason: StopReason =
-      msg.stop_reason === 'tool_use' ? 'tool_use' : msg.stop_reason === 'max_tokens' ? 'max_tokens' : msg.stop_reason === 'refusal' ? 'refusal' : 'end_turn'
+      msg.stop_reason === 'tool_use'
+        ? 'tool_use'
+        : msg.stop_reason === 'max_tokens' || msg.stop_reason === 'model_context_window_exceeded'
+          ? 'max_tokens'
+          : msg.stop_reason === 'refusal'
+            ? 'refusal'
+            : 'end_turn'
     return { content, stopReason }
   }
 }

@@ -18,7 +18,7 @@ for (const s of selected) {
   let result: string
   let detail = ''
   try {
-    const res = await s.run({ model })
+    const res = await s.run({ model, live })
     checks += res.length
     const bad = res.filter((c) => !c.ok)
     result = bad.length ? `FAIL (${res.length - bad.length}/${res.length})` : `PASS (${res.length}/${res.length})`

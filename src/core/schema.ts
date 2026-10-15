@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ts TEXT NOT NULL,
   actor_id TEXT NOT NULL,
   channel TEXT NOT NULL CHECK (channel IN ('web','mcp','cli','system')),
+  project_id TEXT,
   event TEXT NOT NULL,
   tool TEXT, args_json TEXT, reason TEXT,
   outcome TEXT NOT NULL,

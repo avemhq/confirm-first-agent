@@ -18,12 +18,16 @@ export type AuditEvent =
   | 'unknown_tool'
   | 'injection_flagged'
   | 'turn_limit'
+  | 'limit'
+  | 'not_pending'
 
 export interface AuditInput {
   actorId: string
   channel: Channel
   event: AuditEvent
   outcome: string
+  /** Project the entry is about, when known. Used to hide entries once access is revoked. */
+  projectId?: string | null
   tool?: string | null
   args?: unknown
   reason?: string | null
@@ -37,6 +41,7 @@ export interface AuditRow {
   ts: string
   actor_id: string
   channel: Channel
+  project_id: string | null
   event: AuditEvent
   tool: string | null
   args_json: string | null
@@ -64,6 +69,7 @@ export function appendAudit(db: Db, clock: Clock, e: AuditInput): number {
       ts: clock.now().toISOString(),
       actor_id: e.actorId,
       channel: e.channel,
+      project_id: e.projectId ?? null,
       event: e.event,
       tool: e.tool ?? null,
       args_json: e.args === undefined ? null : canonicalJson(e.args),
@@ -76,25 +82,30 @@ export function appendAudit(db: Db, clock: Clock, e: AuditInput): number {
     const prev = last?.hash ?? GENESIS_HASH
     run(
       db,
-      `INSERT INTO audit_log (seq, ts, actor_id, channel, event, tool, args_json, reason, outcome, proposal_id, confirmed_by, detail, prev_hash, hash)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      row.seq, row.ts, row.actor_id, row.channel, row.event, row.tool, row.args_json, row.reason, row.outcome,
+      `INSERT INTO audit_log (seq, ts, actor_id, channel, project_id, event, tool, args_json, reason, outcome, proposal_id, confirmed_by, detail, prev_hash, hash)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      row.seq, row.ts, row.actor_id, row.channel, row.project_id, row.event, row.tool, row.args_json, row.reason, row.outcome,
       row.proposal_id, row.confirmed_by, row.detail, prev, rowHash(prev, row),
     )
     return row.seq
   })
 }
 
-export function listAudit(db: Db, opts: { limit?: number; actorId?: string } = {}): AuditRow[] {
+export function listAudit(db: Db, opts: { limit?: number } = {}): AuditRow[] {
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500)
-  if (opts.actorId) {
-    return all<AuditRow>(
-      db,
-      'SELECT * FROM audit_log WHERE actor_id = ? OR confirmed_by = ? ORDER BY seq DESC LIMIT ?',
-      opts.actorId, opts.actorId, limit,
-    )
-  }
   return all<AuditRow>(db, 'SELECT * FROM audit_log ORDER BY seq DESC LIMIT ?', limit)
+}
+
+/**
+ * Audit entries one user may see: their own actions, and only for projects they can still access
+ * (entries without a project are about the user's own requests and carry no project data).
+ */
+export function listAuditForUser(db: Db, userId: string, scope: string[], limit = 60): { rows: AuditRow[]; total: number } {
+  const inScope = scope.length ? `OR project_id IN (${scope.map(() => '?').join(',')})` : ''
+  const where = `actor_id = ? AND (project_id IS NULL ${inScope})`
+  const total = get<{ n: number }>(db, `SELECT COUNT(*) AS n FROM audit_log WHERE ${where}`, userId, ...scope)?.n ?? 0
+  const rows = all<AuditRow>(db, `SELECT * FROM audit_log WHERE ${where} ORDER BY seq DESC LIMIT ?`, userId, ...scope, limit)
+  return { rows, total }
 }
 
 export interface ChainStatus {
