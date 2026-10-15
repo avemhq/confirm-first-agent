@@ -1,0 +1,80 @@
+'use client'
+
+import { useEffect, useState } from 'react'
+import type { ProposalView } from './types'
+
+const fmt = (v: unknown) => (v === null || v === undefined || v === '' ? '(none)' : String(v))
+
+export default function ProposalCard({ proposal, onDecided }: { proposal: ProposalView; onDecided: () => void }) {
+  const [left, setLeft] = useState(() => Math.max(0, Date.parse(proposal.expiresAt) - Date.now()))
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  useEffect(() => {
+    const t = setInterval(() => setLeft(Math.max(0, Date.parse(proposal.expiresAt) - Date.now())), 1000)
+    return () => clearInterval(t)
+  }, [proposal.expiresAt])
+
+  const decide = async (decision: 'confirm' | 'reject') => {
+    setBusy(true)
+    const res = await fetch(`/api/proposals/${encodeURIComponent(proposal.id)}/${decision}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: proposal.token }),
+    })
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string }
+    setResult({ ok: !!body.ok, message: `${res.status}: ${body.message ?? 'error'}` })
+    setBusy(false)
+    onDecided()
+  }
+
+  const keys = Array.from(new Set([...Object.keys(proposal.before ?? {}), ...Object.keys(proposal.after)]))
+  const expired = left === 0
+  const mm = String(Math.floor(left / 60000)).padStart(1, '0')
+  const ss = String(Math.floor((left % 60000) / 1000)).padStart(2, '0')
+
+  return (
+    <div className={`proposal ${result ? (result.ok ? 'done' : 'failed') : ''}`}>
+      <div className="proposal-head">
+        <span className="tag">proposed change</span>
+        <span className="mono small">{proposal.id}</span>
+        {proposal.channel !== 'web' && <span className="tag alt">via {proposal.channel}</span>}
+        {!result && <span className={`timer ${expired ? 'overdue' : ''}`}>{expired ? 'expired' : `${mm}:${ss}`}</span>}
+      </div>
+      <p className="proposal-title">{proposal.title}</p>
+      <table className="diff">
+        <thead>
+          <tr>
+            <th>Field</th>
+            {proposal.before && <th>Before</th>}
+            <th>{proposal.before ? 'After' : 'New value'}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {keys.map((k) => (
+            <tr key={k}>
+              <td className="mono">{k}</td>
+              {proposal.before && <td className="before">{fmt(proposal.before[k])}</td>}
+              <td className="after">{fmt(proposal.after[k])}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="small">
+        <span className="muted">Agent&apos;s reason:</span> {proposal.reason}
+      </p>
+      {result ? (
+        <p className={`small ${result.ok ? 'ok-text' : 'bad-text'}`}>{result.message}</p>
+      ) : (
+        <div className="actions">
+          <button className="primary" disabled={busy || expired} onClick={() => decide('confirm')}>
+            Confirm
+          </button>
+          <button disabled={busy || expired} onClick={() => decide('reject')}>
+            Reject
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
